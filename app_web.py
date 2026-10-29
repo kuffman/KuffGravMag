@@ -1,198 +1,346 @@
-import streamlit as st
+import os
+import tempfile
 import numpy as np
-import matplotlib.pyplot as plt
 import pandas as pd
+import matplotlib.pyplot as plt
+import streamlit as st
+from scipy.interpolate import griddata
 
-# Import core computational backend engine classes and inversion function
+# Core computational backend engine imports
 from engine.forward import Body2D, PotentialField2D
 from engine.inversion import invert_body_parameters
+from engine.grid import extract_profile_from_xyz
+from engine.report import generate_pdf_report
 
-st.set_page_config(page_title="KuffGravMag Mobile (Multi-Body Workbench)", layout="wide")
+COLOR_OPTIONS = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown']
 
-st.title("🌐 KuffGravMag Workbench (2.5D iPad Edition)")
-st.markdown("Multi-body 2.5D forward modeling, 3D spatial map slicing, and Levenberg-Marquardt inversions.")
+st.set_page_config(page_title="KuffGravMag Workbench", layout="wide")
 
-# Sidebar controls for Multiple 2.5D Bodies
-st.sidebar.header("2.5D Bodies Configuration")
+# --- Session State Initialization ---
+if 'bodies' not in st.session_state:
+    b1_x = np.array([-400, -100, 0, -300, -400], dtype=float)
+    b1_z = np.array([200, 200, 500, 450, 200], dtype=float)
+    body1 = Body2D("Dike / Intrusion 1", b1_x, b1_z, density=400.0, k_succ=0.03, y_min=-400, y_max=400,
+                   color='tab:blue')
 
-# Body 1 Controls
-st.sidebar.subheader("Body 1 (Target / Ore Body)")
-b1_strike = st.sidebar.slider("Body 1 Strike Half-Length (km)", 1.0, 50.0, 10.0, key="b1_s")
-b1_density = st.sidebar.slider("Body 1 Density Contrast (g/cm³)", -1.0, 1.0, 0.3, key="b1_d")
-b1_suscept = st.sidebar.slider("Body 1 Susceptibility (SI)", 0.0, 0.1, 0.02, key="b1_k")
-b1_x1 = st.sidebar.number_input("Body 1 Top-Left X (km)", value=-3.0, key="b1_x1")
-b1_z1 = st.sidebar.number_input("Body 1 Top-Left Z (km)", value=1.0, key="b1_z1")
-b1_x2 = st.sidebar.number_input("Body 1 Top-Right X (km)", value=-1.0, key="b1_x2")
-b1_z2 = st.sidebar.number_input("Body 1 Top-Right Z (km)", value=1.0, key="b1_z2")
-b1_x3 = st.sidebar.number_input("Body 1 Bottom-Right X (km)", value=-1.0, key="b1_x3")
-b1_z3 = st.sidebar.number_input("Body 1 Bottom-Right Z (km)", value=4.0, key="b1_z3")
-b1_x4 = st.sidebar.number_input("Body 1 Bottom-Left X (km)", value=-3.0, key="b1_x4")
-b1_z4 = st.sidebar.number_input("Body 1 Bottom-Left Z (km)", value=4.0, key="b1_z4")
+    b2_x = np.array([100, 400, 450, 150, 100], dtype=float)
+    b2_z = np.array([300, 300, 650, 600, 300], dtype=float)
+    body2 = Body2D("Basement High 2", b2_x, b2_z, density=-200.0, k_succ=0.01, J_r=2.0, I_r=40.0, y_min=-1000,
+                   y_max=1000, color='tab:orange')
+
+    st.session_state.bodies = [body1, body2]
+
+if 'active_idx' not in st.session_state:
+    st.session_state.active_idx = 0
+
+if 'x_obs' not in st.session_state:
+    st.session_state.x_obs = np.linspace(-1000, 1000, 250)
+    st.session_state.z_obs = np.zeros_like(st.session_state.x_obs)
+    st.session_state.obs_gz = None
+    st.session_state.obs_dT = None
+
+st.title("🌐 KuffGravMag — 2.5D Mobile Workbench")
+
+# --- Sidebar Controls ---
+st.sidebar.header("🌍 Regional Ambient Field")
+spin_F = st.sidebar.number_input("Earth Field (F in nT)", min_value=10000.0, max_value=70000.0, value=48000.0,
+                                 step=500.0)
+spin_Inc = st.sidebar.number_input("Field Inclination (deg)", min_value=-90.0, max_value=90.0, value=55.0, step=1.0)
 
 st.sidebar.markdown("---")
+st.sidebar.header("🧱 Subsurface Bodies (2.5D)")
 
-# Body 2 Controls
-st.sidebar.subheader("Body 2 (Regional / Intrusive)")
-b2_strike = st.sidebar.slider("Body 2 Strike Half-Length (km)", 1.0, 50.0, 15.0, key="b2_s")
-b2_density = st.sidebar.slider("Body 2 Density Contrast (g/cm³)", -1.0, 1.0, -0.2, key="b2_d")
-b2_suscept = st.sidebar.slider("Body 2 Susceptibility (SI)", 0.0, 0.1, 0.005, key="b2_k")
-b2_x1 = st.sidebar.number_input("Body 2 Top-Left X (km)", value=1.0, key="b2_x1")
-b2_z1 = st.sidebar.number_input("Body 2 Top-Left Z (km)", value=2.0, key="b2_z1")
-b2_x2 = st.sidebar.number_input("Body 2 Top-Right X (km)", value=3.0, key="b2_x2")
-b2_z2 = st.sidebar.number_input("Body 2 Top-Right Z (km)", value=2.0, key="b2_z2")
-b2_x3 = st.sidebar.number_input("Body 2 Bottom-Right X (km)", value=3.0, key="b2_x3")
-b2_z3 = st.sidebar.number_input("Body 2 Bottom-Right Z (km)", value=6.0, key="b2_z3")
-b2_x4 = st.sidebar.number_input("Body 2 Bottom-Left X (km)", value=1.0, key="b2_x4")
-b2_z4 = st.sidebar.number_input("Body 2 Bottom-Left Z (km)", value=6.0, key="b2_z4")
+# Body Selection
+body_names = [b.name for b in st.session_state.bodies]
+selected_idx = st.sidebar.selectbox("Active Body Target", range(len(body_names)), format_func=lambda i: body_names[i],
+                                    index=min(st.session_state.active_idx, len(body_names) - 1))
+st.session_state.active_idx = selected_idx
+active_body = st.session_state.bodies[st.session_state.active_idx]
 
+# Add / Remove Buttons
+col_add, col_rem = st.sidebar.columns(2)
+if col_add.button("➕ Add Body"):
+    n = len(st.session_state.bodies) + 1
+    x_new = np.array([-100, 100, 150, -50, -100], dtype=float) + (n * 50)
+    z_new = np.array([400, 400, 700, 650, 400], dtype=float)
+    new_body = Body2D(f"Body {n}", x_new, z_new, density=250.0, k_succ=0.015, y_min=-500, y_max=500,
+                      color=COLOR_OPTIONS[n % len(COLOR_OPTIONS)])
+    st.session_state.bodies.append(new_body)
+    st.session_state.active_idx = len(st.session_state.bodies) - 1
+    st.rerun()
+
+if col_rem.button("➖ Remove Body") and len(st.session_state.bodies) > 1:
+    st.session_state.bodies.pop(st.session_state.active_idx)
+    st.session_state.active_idx = max(0, st.session_state.active_idx - 1)
+    st.rerun()
+
+# Active Body Properties
+with st.sidebar.expander(f"⚙️ Properties: {active_body.name}", expanded=True):
+    active_body.density = st.number_input("Density Contrast (kg/m³)", value=float(active_body.density), step=10.0)
+    active_body.k_succ = st.number_input("Susceptibility (SI)", value=float(active_body.k_succ), format="%.4f",
+                                         step=0.005)
+    active_body.J_r = st.number_input("Remanence Jr (A/m)", value=float(active_body.J_r), step=0.5)
+    active_body.I_r = st.number_input("Remanent Inc Ir (deg)", value=float(active_body.I_r), step=5.0)
+    active_body.y_min = st.number_input("Strike Y-Min (m)", value=float(active_body.y_min), step=100.0)
+    active_body.y_max = st.number_input("Strike Y-Max (m)", value=float(active_body.y_max), step=100.0)
+
+    c_idx = COLOR_OPTIONS.index(active_body.color) if active_body.color in COLOR_OPTIONS else 0
+    active_body.color = st.selectbox("Display Color", COLOR_OPTIONS, index=c_idx)
+
+# Active Body Vertex Editor
+with st.sidebar.expander("📐 Edit Active Body Vertices", expanded=False):
+    n_verts = len(active_body.x) - 1
+    new_x, new_z = [], []
+    for i in range(n_verts):
+        col_vx, col_vz = st.columns(2)
+        # Using active_idx in key prevents DuplicateWidgetID crashes if bodies have the same name
+        vx = col_vx.number_input(f"V{i + 1} X (m)", value=float(active_body.x[i]),
+                                 key=f"v_{st.session_state.active_idx}_{i}_x")
+        vz = col_vz.number_input(f"V{i + 1} Z (m)", value=float(active_body.z[i]),
+                                 key=f"v_{st.session_state.active_idx}_{i}_z")
+        new_x.append(vx)
+        new_z.append(vz)
+
+    new_x.append(new_x[0])
+    new_z.append(new_z[0])
+    active_body.update_polygon(new_x, new_z)
+
+# --- Data Import & Slicing ---
 st.sidebar.markdown("---")
-st.sidebar.header("📂 Data Import & 3D Slicing")
-field_type = st.sidebar.selectbox("Field Type", ["gravity", "magnetic"])
-data_type = st.sidebar.radio("Select Data Type", ["2D Profile (Distance, Value)", "3D Spatial Grid (X, Y, Value)"])
-uploaded_file = st.sidebar.file_uploader("Upload CSV / TXT Data File", type=["csv", "txt", "dat"])
+st.sidebar.header("📂 Data Import & Slicing")
+data_import_type = st.sidebar.radio("Import Type",
+                                    ["None / Synthetic", "2D Observed Line (CSV)", "3D Grid Map Transect (XYZ)"])
+uploaded_file = st.sidebar.file_uploader("Upload Data File", type=["csv", "txt", "dat"])
 
-# High-resolution array for continuous forward curve
-x_calc_km = np.linspace(-25, 25, 250)
-x_calc_m = x_calc_km * 1000.0
-z_calc_m = np.zeros_like(x_calc_m)
+grid_spatial_data = None
 
-# Construct Body instances
-body1 = Body2D(
-    name="Body1",
-    x_verts=[b1_x1 * 1000, b1_x2 * 1000, b1_x3 * 1000, b1_x4 * 1000],
-    z_verts=[b1_z1 * 1000, b1_z2 * 1000, b1_z3 * 1000, b1_z4 * 1000],
-    density=b1_density * 1000.0,
-    k_succ=b1_suscept,
-    y_min=-b1_strike * 1000, y_max=b1_strike * 1000,
-    color='tab:blue'
-)
-
-body2 = Body2D(
-    name="Body2",
-    x_verts=[b2_x1 * 1000, b2_x2 * 1000, b2_x3 * 1000, b2_x4 * 1000],
-    z_verts=[b2_z1 * 1000, b2_z2 * 1000, b2_z3 * 1000, b2_z4 * 1000],
-    density=b2_density * 1000.0,
-    k_succ=b2_suscept,
-    y_min=-b2_strike * 1000, y_max=b2_strike * 1000,
-    color='tab:orange'
-)
-
-# Multi-body potential field engine
-field_engine = PotentialField2D(bodies=[body1, body2])
-
-# Initialize state variables
-obs_data = None
-obs_x = None
-spatial_df = None
-slice_y = None
-
-# Process Uploaded Data
 if uploaded_file is not None:
     try:
-        # Flexible parser supporting commas, tabs, or spaces
-        df = pd.read_csv(uploaded_file, sep=r'\s+|,', engine='python')
-        df = df.dropna().apply(pd.to_numeric, errors='coerce').dropna()
+        df = pd.read_csv(uploaded_file, sep=r'\s+|,', engine='python').dropna()
+        df = df.apply(pd.to_numeric, errors='coerce').dropna()
 
-        if "2D Profile" in data_type:
-            if df.shape[1] < 2:
-                st.sidebar.error("File needs at least 2 columns for 2D profile.")
+        if data_import_type == "2D Observed Line (CSV)":
+            x_vals = df.iloc[:, 0].values
+            gz_vals = df.iloc[:, 1].values if df.shape[1] > 1 else None
+            dT_vals = df.iloc[:, 2].values if df.shape[1] > 2 else None
+            z_vals = df.iloc[:, 3].values if df.shape[1] > 3 else np.zeros_like(x_vals)
+
+            st.session_state.x_obs = x_vals
+            st.session_state.z_obs = z_vals
+            st.session_state.obs_gz = gz_vals
+            st.session_state.obs_dT = dT_vals
+            st.sidebar.success(f"Loaded 2D Line: {len(x_vals)} points")
+
+        elif data_import_type == "3D Grid Map Transect (XYZ)":
+            if df.shape[1] >= 3:
+                grid_spatial_data = (df.iloc[:, 0].values, df.iloc[:, 1].values, df.iloc[:, 2].values)
+                st.sidebar.success("3D Grid map parsed successfully!")
             else:
-                obs_x = df.iloc[:, 0].values * 1000.0
-                obs_data = df.iloc[:, 1].values
-                st.sidebar.success(f"2D Profile Loaded: {len(obs_x)} points")
-        else:
-            if df.shape[1] < 3:
-                st.sidebar.error("3D Grid needs at least 3 columns (X, Y, Value).")
-            else:
-                spatial_df = df
-                x_col = df.iloc[:, 0].values
-                y_col = df.iloc[:, 1].values
-                val_col = df.iloc[:, 2].values
+                st.sidebar.error("3D Grid requires at least 3 columns (X, Y, Value).")
 
-                st.sidebar.markdown("---")
-                st.sidebar.subheader("✂️ Profile Slicer Controls")
-                min_y, max_y, med_y = float(np.min(y_col)), float(np.max(y_col)), float(np.median(y_col))
-                slice_y = st.sidebar.slider("Select Y-Slice Coordinate", min_y, max_y, med_y)
-                tolerance = st.sidebar.slider("Slice Tolerance Width", 0.1, 5.0, 1.0)
-
-                idx_slice = np.abs(y_col - slice_y) <= tolerance
-                obs_x = x_col[idx_slice] * 1000.0
-                obs_data = val_col[idx_slice]
-
-                sort_idx = np.argsort(obs_x)
-                obs_x = obs_x[sort_idx]
-                obs_data = obs_data[sort_idx]
-
-                st.sidebar.success(f"3D Map Loaded! Active Slice: {len(obs_x)} points")
-
-        if obs_data is not None and len(obs_data) > 0:
-            if st.sidebar.button("🚀 Run Body 1 Inversion"):
-                with st.spinner("Running Levenberg-Marquardt optimization..."):
-                    success = invert_body_parameters(
-                        target_body=body1,
-                        x_obs=obs_x,
-                        z_obs=np.zeros_like(obs_x),
-                        obs_data=obs_data,
-                        all_bodies=[body1, body2],
-                        field_type=field_type
-                    )
-                    if success:
-                        st.sidebar.success("Inversion converged! Body 1 updated.")
-                    else:
-                        st.sidebar.error("Inversion failed to converge.")
     except Exception as e:
         st.sidebar.error(f"Error parsing file: {e}")
 
-# Compute combined forward response for plotting
-if field_type == 'gravity':
-    calc_anomaly = field_engine.calculate_gravity(x_calc_m, z_calc_m)
-    ylabel_text = "Gravity Anomaly (mGal)"
-else:
-    _, _, calc_anomaly = field_engine.calculate_magnetics(
-        x_calc_m, z_calc_m, F_nT=50000.0, I_f=60.0, D_f=0.0, alpha=0.0
-    )
-    ylabel_text = "Magnetic Anomaly (nT)"
+# --- Inversion Panel ---
+st.sidebar.markdown("---")
+st.sidebar.header("⚙️ Optimization & Inversion")
 
-# Main layout
-col1, col2 = st.columns([1, 1])
-
-with col1:
-    if spatial_df is not None and "3D Spatial Grid" in data_type:
-        st.subheader("🗺️ 3D Spatial Grid Map & Slicer Cut")
-        fig_map, ax_map = plt.subplots(figsize=(6, 4))
-        sc = ax_map.scatter(spatial_df.iloc[:, 0], spatial_df.iloc[:, 1], c=spatial_df.iloc[:, 2], cmap='viridis', s=15)
-        plt.colorbar(sc, ax=ax_map, label=ylabel_text)
-        if slice_y is not None:
-            ax_map.axhline(slice_y, color='red', linestyle='--', lw=2, label=f'Profile Slice (Y={slice_y:.1f})')
-        ax_map.set_xlabel("X Coordinate (km)")
-        ax_map.set_ylabel("Y Coordinate (km)")
-        ax_map.legend(loc='upper right')
-        st.pyplot(fig_map)
+if st.sidebar.button("🚀 Run Gravity Inversion"):
+    if st.session_state.obs_gz is None:
+        st.sidebar.error("Import observed gravity data first!")
     else:
-        st.subheader("Subsurface Multi-Body Model (2.5D)")
-        fig, ax = plt.subplots(figsize=(6, 4))
-        ax.fill(body1.x / 1000.0, body1.z / 1000.0, color='tab:blue', alpha=0.6, label='Body 1 (Target)')
-        ax.fill(body2.x / 1000.0, body2.z / 1000.0, color='tab:orange', alpha=0.6, label='Body 2 (Regional)')
-        ax.set_ylim(15, 0)
-        ax.set_xlabel("Distance X (km)")
-        ax.set_ylabel("Depth (km)")
-        ax.legend()
-        st.pyplot(fig)
+        field_params = {'F': spin_F, 'Inc': spin_Inc}
+        with st.spinner(f"Inverting gravity for {active_body.name}..."):
+            # Try to pass all_bodies if backend supports it, else fallback to standard args
+            try:
+                success = invert_body_parameters(active_body, st.session_state.x_obs, st.session_state.z_obs,
+                                                 st.session_state.obs_gz, all_bodies=st.session_state.bodies,
+                                                 field_type='gravity', field_params=field_params)
+            except TypeError:
+                success = invert_body_parameters(active_body, st.session_state.x_obs, st.session_state.z_obs,
+                                                 st.session_state.obs_gz, field_type='gravity',
+                                                 field_params=field_params)
 
-with col2:
-    st.subheader("Multi-Body Model vs. Observed Fit")
-    fig2, ax2 = plt.subplots(figsize=(6, 4))
-    ax2.plot(x_calc_km, calc_anomaly, color='blue', lw=2, label='Calculated Response')
+            if success:
+                st.sidebar.success("Gravity inversion converged!")
+            else:
+                st.sidebar.error("Inversion failed to converge.")
 
-    if obs_data is not None and obs_x is not None:
-        ax2.scatter(obs_x / 1000.0, obs_data, color='red', s=25, zorder=5, label='Observed Data')
+if st.sidebar.button("🚀 Run Magnetic Inversion"):
+    if st.session_state.obs_dT is None:
+        st.sidebar.error("Import observed magnetic data first!")
+    else:
+        field_params = {'F': spin_F, 'Inc': spin_Inc}
+        with st.spinner(f"Inverting magnetics for {active_body.name}..."):
+            try:
+                success = invert_body_parameters(active_body, st.session_state.x_obs, st.session_state.z_obs,
+                                                 st.session_state.obs_dT, all_bodies=st.session_state.bodies,
+                                                 field_type='magnetics', field_params=field_params)
+            except TypeError:
+                success = invert_body_parameters(active_body, st.session_state.x_obs, st.session_state.z_obs,
+                                                 st.session_state.obs_dT, field_type='magnetics',
+                                                 field_params=field_params)
 
-    ax2.set_title(f"2.5D {field_type.capitalize()} Multi-Body Response")
-    ax2.set_xlabel("Distance X (km)")
-    ax2.set_ylabel(ylabel_text)
-    ax2.grid(True, linestyle='--', alpha=0.6)
-    ax2.legend()
-    st.pyplot(fig2)
+            if success:
+                st.sidebar.success("Magnetic inversion converged!")
+            else:
+                st.sidebar.error("Inversion failed to converge.")
 
-if st.button("📄 Generate PDF Report"):
-    st.success("Report generated successfully! Ready for download.")
+# --- Main Layout Execution (Tabs Fix) ---
+col_left, col_right = st.columns([1, 1.2])
+
+with col_left:
+    tab_model, tab_map = st.tabs(["Subsurface 2.5D Model", "3D Map Transect Slicer"])
+
+    with tab_map:
+        if data_import_type == "3D Grid Map Transect (XYZ)" and grid_spatial_data is not None:
+            gx, gy, gv = grid_spatial_data
+            st.markdown("**1. Define A → B Transect**")
+            col_a, col_b = st.columns(2)
+            x1 = col_a.number_input("Point A (X1)", value=float(gx.min()))
+            y1 = col_a.number_input("Point A (Y1)", value=float(gy.min()))
+            x2 = col_b.number_input("Point B (X2)", value=float(gx.max()))
+            y2 = col_b.number_input("Point B (Y2)", value=float(gy.max()))
+
+            field_target = st.radio("Extract profile as:", ["Gravity Data", "Magnetic Data"], horizontal=True)
+
+            if st.button("✂️ Extract Profile Transect"):
+                profile_dist, profile_v = extract_profile_from_xyz(gx, gy, gv, x1, y1, x2, y2)
+                st.session_state.x_obs = profile_dist
+                st.session_state.z_obs = np.zeros_like(profile_dist)
+                if field_target == "Gravity Data":
+                    st.session_state.obs_gz = profile_v
+                    st.session_state.obs_dT = None
+                else:
+                    st.session_state.obs_dT = profile_v
+                    st.session_state.obs_gz = None
+                st.success("Transect extracted! Switch to 'Subsurface 2.5D Model' tab to view.")
+
+            fig_map, ax_map = plt.subplots(figsize=(6, 5))
+            xi = np.linspace(gx.min(), gx.max(), 150)
+            yi = np.linspace(gy.min(), gy.max(), 150)
+            XI, YI = np.meshgrid(xi, yi)
+            VI = griddata((gx, gy), gv, (XI, YI), method='linear')
+
+            mesh = ax_map.pcolormesh(XI, YI, VI, shading='auto', cmap='jet')
+            fig_map.colorbar(mesh, ax=ax_map, label="Amplitude")
+            ax_map.plot([x1, x2], [y1, y2], 'k-', lw=2.5, marker='o', markersize=8)
+            ax_map.text(x1, y1, " A", fontweight='bold', color='black')
+            ax_map.text(x2, y2, " B", fontweight='bold', color='black')
+            ax_map.set_xlabel("X (m)")
+            ax_map.set_ylabel("Y (m)")
+            ax_map.set_aspect('equal', 'box')
+            st.pyplot(fig_map)
+            plt.close(fig_map)
+        else:
+            st.info("Upload a 3D XYZ Grid file in the sidebar to use the map slicer.")
+
+    with tab_model:
+        fig_mod, ax_mod = plt.subplots(figsize=(6, 5))
+        if np.any(st.session_state.z_obs != 0):
+            ax_mod.plot(st.session_state.x_obs, st.session_state.z_obs, 'k--', lw=1.5, label='Topography')
+
+        for idx, body in enumerate(st.session_state.bodies):
+            is_active = (idx == st.session_state.active_idx)
+            ax_mod.plot(body.x, body.z, '-o', color=body.color, lw=2.5 if is_active else 1.0,
+                        label=f"{body.name} (Y:[{body.y_min:.0f},{body.y_max:.0f}])", markersize=5)
+            ax_mod.fill(body.x, body.z, color=body.color, alpha=0.7 if is_active else 0.3)
+
+        ax_mod.invert_yaxis()
+        ax_mod.set_xlabel("Distance (m)")
+        ax_mod.set_ylabel("Depth (m)")
+        ax_mod.grid(True, linestyle='--', alpha=0.6)
+        ax_mod.legend(loc='lower right', fontsize='small')
+        st.pyplot(fig_mod)
+        plt.close(fig_mod)
+
+# Forward Field Calculations
+engine = PotentialField2D(st.session_state.bodies)
+gz_calc = engine.calculate_gravity(st.session_state.x_obs, st.session_state.z_obs)
+_, _, dT_calc = engine.calculate_magnetics(st.session_state.x_obs, st.session_state.z_obs, spin_F, spin_Inc, 0.0, 0.0)
+
+# Right Column: Field Plots
+with col_right:
+    st.subheader("Model Field Response & Fit")
+    fig_res, (ax_g, ax_m) = plt.subplots(2, 1, figsize=(6, 5.7), sharex=True)
+
+    # Gravity Plot
+    if st.session_state.obs_gz is not None:
+        ax_g.plot(st.session_state.x_obs, st.session_state.obs_gz, 'r.', label='Observed (g)')
+    ax_g.plot(st.session_state.x_obs, gz_calc, 'b-', lw=1.8, label='2.5D Calculated (g)')
+    ax_g.set_ylabel("Gravity (mGal)")
+    ax_g.grid(True, linestyle='--', alpha=0.6)
+    ax_g.legend(loc='upper right')
+
+    # Magnetics Plot
+    if st.session_state.obs_dT is not None:
+        ax_m.plot(st.session_state.x_obs, st.session_state.obs_dT, 'r.', label='Observed (T)')
+    ax_m.plot(st.session_state.x_obs, dT_calc, 'm-', lw=1.8, label='2.5D Calculated (T)')
+    ax_m.set_xlabel("Distance (m)")
+    ax_m.set_ylabel("Magnetics (nT)")
+    ax_m.grid(True, linestyle='--', alpha=0.6)
+    ax_m.legend(loc='upper right')
+
+    st.pyplot(fig_res)
+    plt.close(fig_res)
+
+# --- Reporting and Export Actions ---
+st.markdown("---")
+col_exp1, col_exp2, col_exp3 = st.columns([1, 1, 1])
+
+# Export CSV
+csv_df = pd.DataFrame({
+    'Distance_m': st.session_state.x_obs,
+    'Calculated_gz_mGal': gz_calc,
+    'Calculated_dT_nT': dT_calc
+})
+csv_data = csv_df.to_csv(index=False).encode('utf-8')
+col_exp1.download_button("💾 Export Calculated Results (CSV)", data=csv_data, file_name="KuffGravMag_Results.csv",
+                         mime="text/csv")
+
+# Fixed PDF Generation Workflow
+if col_exp2.button("📄 Prepare Executive PDF Report"):
+    with st.spinner("Generating PDF Report..."):
+        try:
+            temp_fig_path = os.path.join(tempfile.gettempdir(), "temp_report_fig.png")
+            temp_pdf_path = os.path.join(tempfile.gettempdir(), "KuffGravMag_Report.pdf")
+
+            # Create combined figure for report
+            report_fig, (r_ax1, r_ax2, r_ax3) = plt.subplots(3, 1, figsize=(8, 7))
+            if st.session_state.obs_gz is not None:
+                r_ax1.plot(st.session_state.x_obs, st.session_state.obs_gz, 'r.', label='Observed')
+            r_ax1.plot(st.session_state.x_obs, gz_calc, 'b-', label='Calculated')
+            r_ax1.set_ylabel("Gravity (mGal)")
+            r_ax1.grid(True)
+
+            if st.session_state.obs_dT is not None:
+                r_ax2.plot(st.session_state.x_obs, st.session_state.obs_dT, 'r.', label='Observed')
+            r_ax2.plot(st.session_state.x_obs, dT_calc, 'm-', label='Calculated')
+            r_ax2.set_ylabel("Magnetics (nT)")
+            r_ax2.grid(True)
+
+            for body in st.session_state.bodies:
+                r_ax3.plot(body.x, body.z, '-o', color=body.color)
+                r_ax3.fill(body.x, body.z, color=body.color, alpha=0.5)
+            r_ax3.invert_yaxis()
+            r_ax3.set_ylabel("Depth (m)")
+            r_ax3.grid(True)
+
+            report_fig.tight_layout()
+            report_fig.savefig(temp_fig_path, dpi=300)
+            plt.close(report_fig)
+
+            # Generate PDF via engine
+            generate_pdf_report(temp_pdf_path, temp_fig_path, st.session_state.bodies, {'F': spin_F, 'Inc': spin_Inc})
+
+            # Save path to session state to keep download button alive
+            st.session_state.pdf_ready_path = temp_pdf_path
+            st.success("Report prepared successfully!")
+        except Exception as e:
+            st.error(f"Could not build PDF Report: {e}")
+
+# Reveal the download button securely
+if 'pdf_ready_path' in st.session_state and os.path.exists(st.session_state.pdf_ready_path):
+    with open(st.session_state.pdf_ready_path, "rb") as f:
+        col_exp3.download_button("📥 Click to Download PDF", f, file_name="KuffGravMag_Report.pdf",
+                                 mime="application/pdf")
