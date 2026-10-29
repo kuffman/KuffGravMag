@@ -1,6 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
+import sys
+import os
 
 block_cipher = None
+
+# Determine platform-specific icon safely
+if sys.platform == 'win32':
+    icon_file = 'assets/icon.ico' if os.path.exists('assets/icon.ico') else None
+else:
+    icon_file = 'assets/icon.icns' if os.path.exists('assets/icon.icns') else None
 
 a = Analysis(
     ['app.py'],
@@ -11,7 +19,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter'],  # Removed 'pydoc' here so SciPy can find it
+    excludes=['tkinter'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -31,7 +39,12 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    icon='assets/icon.ico',
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+    icon=icon_file,
 )
 
 coll = COLLECT(
@@ -48,6 +61,6 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='KuffGravMag.app',
-    icon=None,
+    icon=icon_file,
     bundle_identifier='com.kuffouropoku.kuffgravmag',
 )
