@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 
-# Import your core computational backend engine classes and inversion function
+# Import core computational backend engine classes and inversion function
 from engine.forward import Body2D, PotentialField2D
 from engine.inversion import invert_body_parameters
 
@@ -49,14 +49,14 @@ st.sidebar.markdown("---")
 st.sidebar.header("📂 Data Import & 3D Slicing")
 field_type = st.sidebar.selectbox("Field Type", ["gravity", "magnetic"])
 data_type = st.sidebar.radio("Select Data Type", ["2D Profile (Distance, Value)", "3D Spatial Grid (X, Y, Value)"])
-uploaded_file = st.sidebar.file_uploader("Upload CSV / TXT Data File", type=["csv", "txt"])
+uploaded_file = st.sidebar.file_uploader("Upload CSV / TXT Data File", type=["csv", "txt", "dat"])
 
-# High-resolution array for plotting the continuous forward curve
+# High-resolution array for continuous forward curve
 x_calc_km = np.linspace(-25, 25, 250)
 x_calc_m = x_calc_km * 1000.0
 z_calc_m = np.zeros_like(x_calc_m)
 
-# Construct Body 1 and Body 2 instances
+# Construct Body instances
 body1 = Body2D(
     name="Body1",
     x_verts=[b1_x1 * 1000, b1_x2 * 1000, b1_x3 * 1000, b1_x4 * 1000],
@@ -77,63 +77,73 @@ body2 = Body2D(
     color='tab:orange'
 )
 
-# Multi-body potential field engine for plotting
+# Multi-body potential field engine
 field_engine = PotentialField2D(bodies=[body1, body2])
 
+# Initialize state variables
 obs_data = None
 obs_x = None
 spatial_df = None
+slice_y = None
 
 # Process Uploaded Data
 if uploaded_file is not None:
     try:
-        df = pd.read_csv(uploaded_file)
+        # Flexible parser supporting commas, tabs, or spaces
+        df = pd.read_csv(uploaded_file, sep=r'\s+|,', engine='python')
+        df = df.dropna().apply(pd.to_numeric, errors='coerce').dropna()
+
         if "2D Profile" in data_type:
-            obs_x = df.iloc[:, 0].values * 1000.0
-            obs_data = df.iloc[:, 1].values
+            if df.shape[1] < 2:
+                st.sidebar.error("File needs at least 2 columns for 2D profile.")
+            else:
+                obs_x = df.iloc[:, 0].values * 1000.0
+                obs_data = df.iloc[:, 1].values
+                st.sidebar.success(f"2D Profile Loaded: {len(obs_x)} points")
         else:
-            spatial_df = df
-            x_col = df.iloc[:, 0].values
-            y_col = df.iloc[:, 1].values
-            val_col = df.iloc[:, 2].values
+            if df.shape[1] < 3:
+                st.sidebar.error("3D Grid needs at least 3 columns (X, Y, Value).")
+            else:
+                spatial_df = df
+                x_col = df.iloc[:, 0].values
+                y_col = df.iloc[:, 1].values
+                val_col = df.iloc[:, 2].values
 
-            st.sidebar.markdown("---")
-            st.sidebar.subheader("✂️ Profile Slicer Controls")
-            slice_y = st.sidebar.slider("Select Y-Slice Coordinate", float(np.min(y_col)), float(np.max(y_col)),
-                                        float(np.median(y_col)))
-            tolerance = st.sidebar.slider("Slice Tolerance Width", 0.1, 5.0, 1.0)
+                st.sidebar.markdown("---")
+                st.sidebar.subheader("✂️ Profile Slicer Controls")
+                min_y, max_y, med_y = float(np.min(y_col)), float(np.max(y_col)), float(np.median(y_col))
+                slice_y = st.sidebar.slider("Select Y-Slice Coordinate", min_y, max_y, med_y)
+                tolerance = st.sidebar.slider("Slice Tolerance Width", 0.1, 5.0, 1.0)
 
-            idx_slice = np.abs(y_col - slice_y) <= tolerance
-            obs_x = x_col[idx_slice] * 1000.0
-            obs_data = val_col[idx_slice]
+                idx_slice = np.abs(y_col - slice_y) <= tolerance
+                obs_x = x_col[idx_slice] * 1000.0
+                obs_data = val_col[idx_slice]
 
-            # Sort by X coordinate to avoid crisscrossing lines
-            sort_idx = np.argsort(obs_x)
-            obs_x = obs_x[sort_idx]
-            obs_data = obs_data[sort_idx]
+                sort_idx = np.argsort(obs_x)
+                obs_x = obs_x[sort_idx]
+                obs_data = obs_data[sort_idx]
 
-        st.sidebar.success(f"Active Profile: {len(obs_x)} points loaded!")
+                st.sidebar.success(f"3D Map Loaded! Active Slice: {len(obs_x)} points")
 
-        if st.sidebar.button("🚀 Run Body 1 Inversion"):
-            with st.spinner("Running Levenberg-Marquardt optimization..."):
-                # Critical Fix: Pass obs_x (the actual survey point locations) to the inversion
-                # and pass all_bodies so Body 2's influence is calculated during Body 1's inversion
-                success = invert_body_parameters(
-                    target_body=body1,
-                    x_obs=obs_x,
-                    z_obs=np.zeros_like(obs_x),
-                    obs_data=obs_data,
-                    all_bodies=[body1, body2],
-                    field_type=field_type
-                )
-                if success:
-                    st.sidebar.success("Inversion converged! Body 1 updated.")
-                else:
-                    st.sidebar.error("Inversion failed to converge.")
+        if obs_data is not None and len(obs_data) > 0:
+            if st.sidebar.button("🚀 Run Body 1 Inversion"):
+                with st.spinner("Running Levenberg-Marquardt optimization..."):
+                    success = invert_body_parameters(
+                        target_body=body1,
+                        x_obs=obs_x,
+                        z_obs=np.zeros_like(obs_x),
+                        obs_data=obs_data,
+                        all_bodies=[body1, body2],
+                        field_type=field_type
+                    )
+                    if success:
+                        st.sidebar.success("Inversion converged! Body 1 updated.")
+                    else:
+                        st.sidebar.error("Inversion failed to converge.")
     except Exception as e:
         st.sidebar.error(f"Error parsing file: {e}")
 
-# Compute combined forward response for plotting (using high-res x_calc_m)
+# Compute combined forward response for plotting
 if field_type == 'gravity':
     calc_anomaly = field_engine.calculate_gravity(x_calc_m, z_calc_m)
     ylabel_text = "Gravity Anomaly (mGal)"
@@ -143,7 +153,7 @@ else:
     )
     ylabel_text = "Magnetic Anomaly (nT)"
 
-# Main layout: Map / Subsurface model view on left, Profile fit on right
+# Main layout
 col1, col2 = st.columns([1, 1])
 
 with col1:
@@ -152,7 +162,7 @@ with col1:
         fig_map, ax_map = plt.subplots(figsize=(6, 4))
         sc = ax_map.scatter(spatial_df.iloc[:, 0], spatial_df.iloc[:, 1], c=spatial_df.iloc[:, 2], cmap='viridis', s=15)
         plt.colorbar(sc, ax=ax_map, label=ylabel_text)
-        if 'slice_y' in locals():
+        if slice_y is not None:
             ax_map.axhline(slice_y, color='red', linestyle='--', lw=2, label=f'Profile Slice (Y={slice_y:.1f})')
         ax_map.set_xlabel("X Coordinate (km)")
         ax_map.set_ylabel("Y Coordinate (km)")
@@ -172,10 +182,8 @@ with col1:
 with col2:
     st.subheader("Multi-Body Model vs. Observed Fit")
     fig2, ax2 = plt.subplots(figsize=(6, 4))
-    # Plot calculated continuous response
     ax2.plot(x_calc_km, calc_anomaly, color='blue', lw=2, label='Calculated Response')
 
-    # Scatter plot real observed data points
     if obs_data is not None and obs_x is not None:
         ax2.scatter(obs_x / 1000.0, obs_data, color='red', s=25, zorder=5, label='Observed Data')
 
