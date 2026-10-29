@@ -25,6 +25,7 @@ jobs:
 
     - name: Build Windows Executable
       run: |
+        if (!(Test-Path -Path "assets")) { New-Item -ItemType Directory -Path "assets" }
         pyinstaller KuffGravMag.spec --noconfirm
 
     - name: Upload Windows Artifact
