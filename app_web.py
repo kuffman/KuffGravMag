@@ -16,9 +16,10 @@ st.markdown("Multi-body 2.5D forward modeling, 3D spatial map slicing, and Leven
 st.sidebar.header("2.5D Bodies Configuration")
 
 # Body 1 Controls
-st.sidebar.subheader("Body 1 (e.g., Ore Body)")
+st.sidebar.subheader("Body 1 (Target / Ore Body)")
 b1_strike = st.sidebar.slider("Body 1 Strike Half-Length (km)", 1.0, 50.0, 10.0, key="b1_s")
 b1_density = st.sidebar.slider("Body 1 Density Contrast (g/cm³)", -1.0, 1.0, 0.3, key="b1_d")
+b1_suscept = st.sidebar.slider("Body 1 Susceptibility (SI)", 0.0, 0.1, 0.02, key="b1_k")
 b1_x1 = st.sidebar.number_input("Body 1 Top-Left X (km)", value=-3.0, key="b1_x1")
 b1_z1 = st.sidebar.number_input("Body 1 Top-Left Z (km)", value=1.0, key="b1_z1")
 b1_x2 = st.sidebar.number_input("Body 1 Top-Right X (km)", value=-1.0, key="b1_x2")
@@ -31,9 +32,10 @@ b1_z4 = st.sidebar.number_input("Body 1 Bottom-Left Z (km)", value=4.0, key="b1_
 st.sidebar.markdown("---")
 
 # Body 2 Controls
-st.sidebar.subheader("Body 2 (e.g., Intrusive / Dyke)")
+st.sidebar.subheader("Body 2 (Regional / Intrusive)")
 b2_strike = st.sidebar.slider("Body 2 Strike Half-Length (km)", 1.0, 50.0, 15.0, key="b2_s")
 b2_density = st.sidebar.slider("Body 2 Density Contrast (g/cm³)", -1.0, 1.0, -0.2, key="b2_d")
+b2_suscept = st.sidebar.slider("Body 2 Susceptibility (SI)", 0.0, 0.1, 0.005, key="b2_k")
 b2_x1 = st.sidebar.number_input("Body 2 Top-Left X (km)", value=1.0, key="b2_x1")
 b2_z1 = st.sidebar.number_input("Body 2 Top-Left Z (km)", value=2.0, key="b2_z1")
 b2_x2 = st.sidebar.number_input("Body 2 Top-Right X (km)", value=3.0, key="b2_x2")
@@ -49,10 +51,10 @@ field_type = st.sidebar.selectbox("Field Type", ["gravity", "magnetic"])
 data_type = st.sidebar.radio("Select Data Type", ["2D Profile (Distance, Value)", "3D Spatial Grid (X, Y, Value)"])
 uploaded_file = st.sidebar.file_uploader("Upload CSV / TXT Data File", type=["csv", "txt"])
 
-# Define observation profile coordinates (meters)
-x_obs_km = np.linspace(-25, 25, 250)
-x_obs = x_obs_km * 1000.0
-z_obs = np.zeros_like(x_obs)
+# High-resolution array for plotting the continuous forward curve
+x_calc_km = np.linspace(-25, 25, 250)
+x_calc_m = x_calc_km * 1000.0
+z_calc_m = np.zeros_like(x_calc_m)
 
 # Construct Body 1 and Body 2 instances
 body1 = Body2D(
@@ -60,6 +62,7 @@ body1 = Body2D(
     x_verts=[b1_x1 * 1000, b1_x2 * 1000, b1_x3 * 1000, b1_x4 * 1000],
     z_verts=[b1_z1 * 1000, b1_z2 * 1000, b1_z3 * 1000, b1_z4 * 1000],
     density=b1_density * 1000.0,
+    k_succ=b1_suscept,
     y_min=-b1_strike * 1000, y_max=b1_strike * 1000,
     color='tab:blue'
 )
@@ -69,17 +72,19 @@ body2 = Body2D(
     x_verts=[b2_x1 * 1000, b2_x2 * 1000, b2_x3 * 1000, b2_x4 * 1000],
     z_verts=[b2_z1 * 1000, b2_z2 * 1000, b2_z3 * 1000, b2_z4 * 1000],
     density=b2_density * 1000.0,
+    k_succ=b2_suscept,
     y_min=-b2_strike * 1000, y_max=b2_strike * 1000,
     color='tab:orange'
 )
 
-# Multi-body potential field engine
+# Multi-body potential field engine for plotting
 field_engine = PotentialField2D(bodies=[body1, body2])
 
 obs_data = None
 obs_x = None
 spatial_df = None
 
+# Process Uploaded Data
 if uploaded_file is not None:
     try:
         df = pd.read_csv(uploaded_file)
@@ -102,29 +107,39 @@ if uploaded_file is not None:
             obs_x = x_col[idx_slice] * 1000.0
             obs_data = val_col[idx_slice]
 
+            # Sort by X coordinate to avoid crisscrossing lines
             sort_idx = np.argsort(obs_x)
             obs_x = obs_x[sort_idx]
             obs_data = obs_data[sort_idx]
 
-        st.sidebar.success(f"Active Profile: {len(obs_x)} points")
+        st.sidebar.success(f"Active Profile: {len(obs_x)} points loaded!")
 
         if st.sidebar.button("🚀 Run Body 1 Inversion"):
-            with st.spinner("Running least-squares inversion on Body 1..."):
-                success = invert_body_parameters(body1, x_obs, z_obs, obs_data, field_type=field_type)
+            with st.spinner("Running Levenberg-Marquardt optimization..."):
+                # Critical Fix: Pass obs_x (the actual survey point locations) to the inversion
+                # and pass all_bodies so Body 2's influence is calculated during Body 1's inversion
+                success = invert_body_parameters(
+                    target_body=body1,
+                    x_obs=obs_x,
+                    z_obs=np.zeros_like(obs_x),
+                    obs_data=obs_data,
+                    all_bodies=[body1, body2],
+                    field_type=field_type
+                )
                 if success:
-                    st.sidebar.success("Body 1 inversion converged successfully!")
+                    st.sidebar.success("Inversion converged! Body 1 updated.")
                 else:
                     st.sidebar.error("Inversion failed to converge.")
     except Exception as e:
         st.sidebar.error(f"Error parsing file: {e}")
 
-# Compute combined forward response for all bodies
+# Compute combined forward response for plotting (using high-res x_calc_m)
 if field_type == 'gravity':
-    calc_anomaly = field_engine.calculate_gravity(x_obs, z_obs)
+    calc_anomaly = field_engine.calculate_gravity(x_calc_m, z_calc_m)
     ylabel_text = "Gravity Anomaly (mGal)"
 else:
     _, _, calc_anomaly = field_engine.calculate_magnetics(
-        x_obs, z_obs, F_nT=50000.0, I_f=60.0, D_f=0.0, alpha=0.0
+        x_calc_m, z_calc_m, F_nT=50000.0, I_f=60.0, D_f=0.0, alpha=0.0
     )
     ylabel_text = "Magnetic Anomaly (nT)"
 
@@ -136,18 +151,18 @@ with col1:
         st.subheader("🗺️ 3D Spatial Grid Map & Slicer Cut")
         fig_map, ax_map = plt.subplots(figsize=(6, 4))
         sc = ax_map.scatter(spatial_df.iloc[:, 0], spatial_df.iloc[:, 1], c=spatial_df.iloc[:, 2], cmap='viridis', s=15)
-        plt.colorbar(sc, ax=ax_map, label='Anomaly Value')
+        plt.colorbar(sc, ax=ax_map, label=ylabel_text)
         if 'slice_y' in locals():
             ax_map.axhline(slice_y, color='red', linestyle='--', lw=2, label=f'Profile Slice (Y={slice_y:.1f})')
-        ax_map.set_xlabel("X Coordinate")
-        ax_map.set_ylabel("Y Coordinate")
+        ax_map.set_xlabel("X Coordinate (km)")
+        ax_map.set_ylabel("Y Coordinate (km)")
         ax_map.legend(loc='upper right')
         st.pyplot(fig_map)
     else:
         st.subheader("Subsurface Multi-Body Model (2.5D)")
         fig, ax = plt.subplots(figsize=(6, 4))
-        ax.fill(body1.x / 1000.0, body1.z / 1000.0, color='tab:blue', alpha=0.5, label='Body 1')
-        ax.fill(body2.x / 1000.0, body2.z / 1000.0, color='tab:orange', alpha=0.5, label='Body 2')
+        ax.fill(body1.x / 1000.0, body1.z / 1000.0, color='tab:blue', alpha=0.6, label='Body 1 (Target)')
+        ax.fill(body2.x / 1000.0, body2.z / 1000.0, color='tab:orange', alpha=0.6, label='Body 2 (Regional)')
         ax.set_ylim(15, 0)
         ax.set_xlabel("Distance X (km)")
         ax.set_ylabel("Depth (km)")
@@ -157,10 +172,12 @@ with col1:
 with col2:
     st.subheader("Multi-Body Model vs. Observed Fit")
     fig2, ax2 = plt.subplots(figsize=(6, 4))
-    ax2.plot(x_obs_km, calc_anomaly, color='blue', lw=2, label='Combined Calculated Response')
+    # Plot calculated continuous response
+    ax2.plot(x_calc_km, calc_anomaly, color='blue', lw=2, label='Calculated Response')
 
+    # Scatter plot real observed data points
     if obs_data is not None and obs_x is not None:
-        ax2.scatter(obs_x / 1000.0, obs_data, color='red', s=25, zorder=5, label='Observed Sliced Data')
+        ax2.scatter(obs_x / 1000.0, obs_data, color='red', s=25, zorder=5, label='Observed Data')
 
     ax2.set_title(f"2.5D {field_type.capitalize()} Multi-Body Response")
     ax2.set_xlabel("Distance X (km)")
