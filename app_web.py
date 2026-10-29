@@ -7,68 +7,118 @@ import pandas as pd
 from engine.forward import Body2D, PotentialField2D
 from engine.inversion import invert_body_parameters
 
-st.set_page_config(page_title="KuffGravMag Mobile (2.5D + Inversion)", layout="wide")
+st.set_page_config(page_title="KuffGravMag Mobile (Multi-Body Workbench)", layout="wide")
 
 st.title("🌐 KuffGravMag Workbench (2.5D iPad Edition)")
-st.markdown("Run exact 2.5D forward modeling and Levenberg-Marquardt inversions directly from your tablet.")
+st.markdown("Multi-body 2.5D forward modeling, 3D spatial map slicing, and Levenberg-Marquardt inversions.")
 
-# Sidebar controls for 2.5D Body Parameters
-st.sidebar.header("2.5D Body Parameters")
-depth = st.sidebar.slider("Depth to Top (km)", 0.1, 10.0, 2.0)
-width = st.sidebar.slider("Body Width (km)", 1.0, 20.0, 5.0)
-strike_half_length = st.sidebar.slider("Strike Half-Length Y (km)", 1.0, 50.0, 10.0)
-density_contrast = st.sidebar.slider("Density Contrast (g/cm³)", -1.0, 1.0, 0.25)
-susceptibility = st.sidebar.slider("Magnetic Susceptibility (SI)", 0.0, 0.1, 0.02)
+# Sidebar controls for Multiple 2.5D Bodies
+st.sidebar.header("2.5D Bodies Configuration")
+
+# Body 1 Controls
+st.sidebar.subheader("Body 1 (e.g., Ore Body)")
+b1_strike = st.sidebar.slider("Body 1 Strike Half-Length (km)", 1.0, 50.0, 10.0, key="b1_s")
+b1_density = st.sidebar.slider("Body 1 Density Contrast (g/cm³)", -1.0, 1.0, 0.3, key="b1_d")
+b1_x1 = st.sidebar.number_input("Body 1 Top-Left X (km)", value=-3.0, key="b1_x1")
+b1_z1 = st.sidebar.number_input("Body 1 Top-Left Z (km)", value=1.0, key="b1_z1")
+b1_x2 = st.sidebar.number_input("Body 1 Top-Right X (km)", value=-1.0, key="b1_x2")
+b1_z2 = st.sidebar.number_input("Body 1 Top-Right Z (km)", value=1.0, key="b1_z2")
+b1_x3 = st.sidebar.number_input("Body 1 Bottom-Right X (km)", value=-1.0, key="b1_x3")
+b1_z3 = st.sidebar.number_input("Body 1 Bottom-Right Z (km)", value=4.0, key="b1_z3")
+b1_x4 = st.sidebar.number_input("Body 1 Bottom-Left X (km)", value=-3.0, key="b1_x4")
+b1_z4 = st.sidebar.number_input("Body 1 Bottom-Left Z (km)", value=4.0, key="b1_z4")
 
 st.sidebar.markdown("---")
-st.sidebar.header("📂 Data Import & Inversion")
+
+# Body 2 Controls
+st.sidebar.subheader("Body 2 (e.g., Intrusive / Dyke)")
+b2_strike = st.sidebar.slider("Body 2 Strike Half-Length (km)", 1.0, 50.0, 15.0, key="b2_s")
+b2_density = st.sidebar.slider("Body 2 Density Contrast (g/cm³)", -1.0, 1.0, -0.2, key="b2_d")
+b2_x1 = st.sidebar.number_input("Body 2 Top-Left X (km)", value=1.0, key="b2_x1")
+b2_z1 = st.sidebar.number_input("Body 2 Top-Left Z (km)", value=2.0, key="b2_z1")
+b2_x2 = st.sidebar.number_input("Body 2 Top-Right X (km)", value=3.0, key="b2_x2")
+b2_z2 = st.sidebar.number_input("Body 2 Top-Right Z (km)", value=2.0, key="b2_z2")
+b2_x3 = st.sidebar.number_input("Body 2 Bottom-Right X (km)", value=3.0, key="b2_x3")
+b2_z3 = st.sidebar.number_input("Body 2 Bottom-Right Z (km)", value=6.0, key="b2_z3")
+b2_x4 = st.sidebar.number_input("Body 2 Bottom-Left X (km)", value=1.0, key="b2_x4")
+b2_z4 = st.sidebar.number_input("Body 2 Bottom-Left Z (km)", value=6.0, key="b2_z4")
+
+st.sidebar.markdown("---")
+st.sidebar.header("📂 Data Import & 3D Slicing")
 field_type = st.sidebar.selectbox("Field Type", ["gravity", "magnetic"])
-uploaded_file = st.sidebar.file_uploader("Upload Observed Data (X, Value)", type=["csv", "txt"])
+data_type = st.sidebar.radio("Select Data Type", ["2D Profile (Distance, Value)", "3D Spatial Grid (X, Y, Value)"])
+uploaded_file = st.sidebar.file_uploader("Upload CSV / TXT Data File", type=["csv", "txt"])
 
 # Define observation profile coordinates (meters)
-x_obs_km = np.linspace(-20, 20, 200)
+x_obs_km = np.linspace(-25, 25, 250)
 x_obs = x_obs_km * 1000.0
 z_obs = np.zeros_like(x_obs)
 
-# Construct polygonal body vertices in meters
-half_w = (width * 1000.0) / 2.0
-d_top = depth * 1000.0
-d_bottom = d_top + (3.0 * 1000.0)
-
-x_verts = [-half_w, half_w, half_w, -half_w]
-z_verts = [d_top, d_top, d_bottom, d_bottom]
-
-# Initialize body
-body = Body2D(
-    name="MobileBody",
-    x_verts=x_verts,
-    z_verts=z_verts,
-    density=density_contrast * 1000.0,
-    k_succ=susceptibility,
-    y_min=-strike_half_length * 1000.0,
-    y_max=strike_half_length * 1000.0
+# Construct Body 1 and Body 2 instances
+body1 = Body2D(
+    name="Body1",
+    x_verts=[b1_x1 * 1000, b1_x2 * 1000, b1_x3 * 1000, b1_x4 * 1000],
+    z_verts=[b1_z1 * 1000, b1_z2 * 1000, b1_z3 * 1000, b1_z4 * 1000],
+    density=b1_density * 1000.0,
+    y_min=-b1_strike * 1000, y_max=b1_strike * 1000,
+    color='tab:blue'
 )
 
-# Handle Inversion if data is uploaded and button is pressed
+body2 = Body2D(
+    name="Body2",
+    x_verts=[b2_x1 * 1000, b2_x2 * 1000, b2_x3 * 1000, b2_x4 * 1000],
+    z_verts=[b2_z1 * 1000, b2_z2 * 1000, b2_z3 * 1000, b2_z4 * 1000],
+    density=b2_density * 1000.0,
+    y_min=-b2_strike * 1000, y_max=b2_strike * 1000,
+    color='tab:orange'
+)
+
+# Multi-body potential field engine
+field_engine = PotentialField2D(bodies=[body1, body2])
+
 obs_data = None
+obs_x = None
+spatial_df = None
+
 if uploaded_file is not None:
     try:
         df = pd.read_csv(uploaded_file)
-        obs_x = df.iloc[:, 0].values * 1000.0  # assume km in file, convert to m
-        obs_data = df.iloc[:, 1].values
+        if "2D Profile" in data_type:
+            obs_x = df.iloc[:, 0].values * 1000.0
+            obs_data = df.iloc[:, 1].values
+        else:
+            spatial_df = df
+            x_col = df.iloc[:, 0].values
+            y_col = df.iloc[:, 1].values
+            val_col = df.iloc[:, 2].values
 
-        if st.sidebar.button("🚀 Run Levenberg-Marquardt Inversion"):
-            with st.spinner("Running least-squares inversion..."):
-                success = invert_body_parameters(body, x_obs, z_obs, obs_data, field_type=field_type)
+            st.sidebar.markdown("---")
+            st.sidebar.subheader("✂️ Profile Slicer Controls")
+            slice_y = st.sidebar.slider("Select Y-Slice Coordinate", float(np.min(y_col)), float(np.max(y_col)),
+                                        float(np.median(y_col)))
+            tolerance = st.sidebar.slider("Slice Tolerance Width", 0.1, 5.0, 1.0)
+
+            idx_slice = np.abs(y_col - slice_y) <= tolerance
+            obs_x = x_col[idx_slice] * 1000.0
+            obs_data = val_col[idx_slice]
+
+            sort_idx = np.argsort(obs_x)
+            obs_x = obs_x[sort_idx]
+            obs_data = obs_data[sort_idx]
+
+        st.sidebar.success(f"Active Profile: {len(obs_x)} points")
+
+        if st.sidebar.button("🚀 Run Body 1 Inversion"):
+            with st.spinner("Running least-squares inversion on Body 1..."):
+                success = invert_body_parameters(body1, x_obs, z_obs, obs_data, field_type=field_type)
                 if success:
-                    st.sidebar.success("Inversion converged successfully!")
+                    st.sidebar.success("Body 1 inversion converged successfully!")
                 else:
                     st.sidebar.error("Inversion failed to converge.")
     except Exception as e:
-        st.sidebar.error(f"Error reading file for inversion: {e}")
+        st.sidebar.error(f"Error parsing file: {e}")
 
-# Compute forward response using current body parameters (optimized or slider-driven)
-field_engine = PotentialField2D(bodies=[body])
+# Compute combined forward response for all bodies
 if field_type == 'gravity':
     calc_anomaly = field_engine.calculate_gravity(x_obs, z_obs)
     ylabel_text = "Gravity Anomaly (mGal)"
@@ -78,29 +128,41 @@ else:
     )
     ylabel_text = "Magnetic Anomaly (nT)"
 
-# Main calculation and plotting area
+# Main layout: Map / Subsurface model view on left, Profile fit on right
 col1, col2 = st.columns([1, 1])
 
 with col1:
-    st.subheader("Subsurface Model Preview (2.5D)")
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.fill(body.x / 1000.0, body.z / 1000.0, color='gray', alpha=0.6, label=f'Body (Y = ±{strike_half_length} km)')
-    ax.set_ylim(15, 0)  # Inverted depth axis
-    ax.set_xlabel("Distance X (km)")
-    ax.set_ylabel("Depth (km)")
-    ax.legend()
-    st.pyplot(fig)
+    if spatial_df is not None and "3D Spatial Grid" in data_type:
+        st.subheader("🗺️ 3D Spatial Grid Map & Slicer Cut")
+        fig_map, ax_map = plt.subplots(figsize=(6, 4))
+        sc = ax_map.scatter(spatial_df.iloc[:, 0], spatial_df.iloc[:, 1], c=spatial_df.iloc[:, 2], cmap='viridis', s=15)
+        plt.colorbar(sc, ax=ax_map, label='Anomaly Value')
+        if 'slice_y' in locals():
+            ax_map.axhline(slice_y, color='red', linestyle='--', lw=2, label=f'Profile Slice (Y={slice_y:.1f})')
+        ax_map.set_xlabel("X Coordinate")
+        ax_map.set_ylabel("Y Coordinate")
+        ax_map.legend(loc='upper right')
+        st.pyplot(fig_map)
+    else:
+        st.subheader("Subsurface Multi-Body Model (2.5D)")
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.fill(body1.x / 1000.0, body1.z / 1000.0, color='tab:blue', alpha=0.5, label='Body 1')
+        ax.fill(body2.x / 1000.0, body2.z / 1000.0, color='tab:orange', alpha=0.5, label='Body 2')
+        ax.set_ylim(15, 0)
+        ax.set_xlabel("Distance X (km)")
+        ax.set_ylabel("Depth (km)")
+        ax.legend()
+        st.pyplot(fig)
 
 with col2:
-    st.subheader("Model vs. Observed Data Comparison")
-
+    st.subheader("Multi-Body Model vs. Observed Fit")
     fig2, ax2 = plt.subplots(figsize=(6, 4))
-    ax2.plot(x_obs_km, calc_anomaly, color='blue', lw=2, label='Calculated Response')
+    ax2.plot(x_obs_km, calc_anomaly, color='blue', lw=2, label='Combined Calculated Response')
 
-    if obs_data is not None:
-        ax2.scatter(obs_x / 1000.0, obs_data, color='red', zorder=5, label='Observed Data')
+    if obs_data is not None and obs_x is not None:
+        ax2.scatter(obs_x / 1000.0, obs_data, color='red', s=25, zorder=5, label='Observed Sliced Data')
 
-    ax2.set_title(f"2.5D {field_type.capitalize()} Inversion Fit")
+    ax2.set_title(f"2.5D {field_type.capitalize()} Multi-Body Response")
     ax2.set_xlabel("Distance X (km)")
     ax2.set_ylabel(ylabel_text)
     ax2.grid(True, linestyle='--', alpha=0.6)
