@@ -107,10 +107,86 @@ supplied; it is not inferred. Euler deconvolution's dependence on structural
 index and window choice is described in the [peer-reviewed Euler equation reference](https://doi.org/10.1186/s40517-019-0130-y).
 
 The core Euler solver is independently checked against a synthetic point-source
-field with a known homogeneous degree. An interactive Euler grid workflow is
-deferred until its window selection and noisy multi-source behavior have a
-validated UX. Regular-grid spectral outputs and Euler estimates remain
-available through the Python API.
+field with a known homogeneous degree. The grid interpretation workflow lets
+the user select an odd square window in cells, stride, one or more structural
+indices (0–5), maximum scaled condition number, and optional maximum RMS
+residual. Failed and filtered windows remain in the result set with their
+status. Structural index zero omits the base-level parameter because the
+zero-index equation cannot identify it. Estimates from overlapping windows
+are not independent observations and do not provide geological confidence
+intervals.
+
+The same grid workflow fits a band-limited radial power spectrum using
+`log(P) = intercept - 2 * depth * k`. It reports the selected wavenumber band,
+the least-squares slope standard error, and R². The standard error describes
+only the selected linear fit; it excludes sampling, model, and geological
+uncertainty. The method estimates a source-population depth trend and does not
+resolve the depth of an individual body.
+
+## DEM residual-terrain correction
+
+`engine.terrain.TerrainDEM` accepts a regular grid of cell-centred elevations
+on projected metre coordinates or a declared local east/north metre frame.
+The DEM datum and survey-station datum must match exactly; elevations are
+positive upward. The caller explicitly supplies station easting, northing,
+elevation, a station coordinate reference that exactly matches the DEM, a
+horizontal reference plane, and constant density in kg/m³. Each
+finite DEM cell is represented by a rectangular prism between its cell
+elevation and the reference plane. Cells above the plane use positive density
+contrast; cells below use a negative density contrast. Missing DEM cells are
+skipped and counted. The returned additive term is positive-down vertical
+attraction in mGal and can be wrapped in a `ProcessingProduct` for a manifest.
+
+This is a finite-footprint DEM residual-mass calculation. It does not infer
+terrain outside the grid, apply Earth curvature, transform coordinates, or
+replace a complete spherical terrain workflow. The model should not be
+described as a complete Bouguer anomaly by itself. Tests compare the prism sum
+with a separate closed-form rectangular-prism calculation and the pinned
+Harmonica 0.7.0 `prism_gravity` implementation.
+
+## IGRF-14 main-field correction
+
+The pinned IGRF-14 coefficient file is bundled with the engine, so results are
+offline and reproducible. Its SHA-256 is recorded in the processing manifest
+and checked at load time. `igrf14_main_field` requires geodetic WGS-84 latitude,
+east longitude, ellipsoid altitude in metres, and a UTC date or decimal year.
+The supported range is 1900.0–2030.0; requests outside it fail instead of
+extrapolating. The result records the model, decimal year, location, altitude,
+and north/east/down components in nT, where Z/down is positive. Declination is
+east of true north and inclination is positive down. The coefficient release
+is [IAGA IGRF-14](https://doi.org/10.5281/zenodo.14012302), and the official
+[BGS calculator](https://geomag.bgs.ac.uk/data_service/models_compass/igrf_calc.html)
+defines the WGS-84 altitude and component conventions used by the reference
+tests.
+
+`apply_igrf_main_field_correction` subtracts IGRF total intensity F from
+aligned raw total-field observations and retains X, Y, Z, F, the input field,
+station coordinates, dates, and corrected values. It must not be applied to
+the existing `magnetic_anomaly_nt` survey channel because that channel is
+already labelled as an anomaly. IGRF represents the large-scale internal main
+field; it does not remove local crustal anomalies, diurnal changes, or external
+field variation.
+
+## Stabilized magnetic direction transform
+
+The grid interpretation workflow offers a regularized frequency-domain
+direction transform. Field, total source magnetization, and target directions
+are entered explicitly; inclination is positive down and declination is east
+of north. The default target is vertical, corresponding to reduction to the
+pole. The directional kernel follows the planar potential-field form
+`Theta = m_down + i*(m_e*k_e + m_n*k_n)/|k|`; the observed product is inverted
+using Tikhonov regularization and multiplied by the target product. The
+required positive dimensionless lambda and maximum allowed gain are saved in
+the UI result; the engine reports maximum gain, RMS gain, and the fraction of
+frequencies above unit gain. The implementation follows the documented
+[Harmonica RTP kernel](https://www.fatiando.org/harmonica/v0.7.0/api/generated/harmonica.filters.reduction_to_pole_kernel.html)
+with a ridge-regularized inverse.
+
+Tests compare the unregularized-limit result with Harmonica at moderate
+inclination and check that low-latitude regularization caps gain. This does
+not establish a unique magnetization direction or make a noisy low-latitude
+transform geologically stable. Remanence, nonuniform magnetization, missing
+cells, sampling, and edge effects remain assumptions for interpretation.
 
 ## Projects, UI, and exports
 
@@ -119,7 +195,11 @@ elevation metadata, source provenance, and processing-step manifests. The
 loader continues to accept earlier project versions. The desktop menu and web
 sidebar expose survey import, free-air and optional slab reduction, magnetic
 diurnal correction, polynomial regional separation, regular interpolation,
-profile spectral transforms, previews, and processing-bundle download.
+profile spectral transforms, previews, and processing-bundle download. The
+desktop and web grid panels accept complete regular XYZ grids for grid
+derivatives, magnetic direction transforms, Euler window sweeps, and
+band-limited spectral depth estimates. Irregular XYZ transects continue to use
+the existing map-slicing workflow.
 
 The reproducible ZIP contains `profile.csv`, a `manifest.json`, any
 regular-profile outputs, and supporting base-station CSVs. It preserves the raw
@@ -129,16 +209,20 @@ processing parameters, and SHA-256 hashes.
 ## Validated scope and deferred work
 
 Synthetic tests compare corrections with independently evaluated scalar
-formulas, regional fitting with a known orthogonal polynomial-plus-residual
-signal, interpolation with linear analytic fields, scattered gridding with a
-planar field, Fourier transforms with periodic analytic modes, and Euler
-deconvolution with a known point source. These validate numerical behavior for
-the declared synthetic inputs; they do not establish accuracy for field data.
+formulas, terrain prisms with a separate closed form and Harmonica, IGRF-14
+vectors with official BGS calculator values at four locations, regional fitting
+with a known orthogonal polynomial-plus-residual signal, interpolation with
+linear analytic fields, gridding with a planar field, Fourier transforms with
+periodic analytic modes, the magnetic transform with Harmonica, spectral depth
+with a synthetic exponential spectrum, and Euler deconvolution/window filters
+with analytic homogeneous fields. These checks validate the declared inputs
+and formulas; they do not establish accuracy for field data.
 
-Terrain corrections are deferred until a terrain-data format, datum, density,
-and independent terrain benchmark are defined. IGRF/main-field corrections are
-deferred until a supported reference model, date/location metadata, and
-independent field-vector tests are selected. Stable reduction-to-pole or other
-low-latitude transforms are deferred; the application preserves the declared
-field orientation but does not claim a validated low-inclination stabilization.
-These advanced operations are intentionally absent from current controls.
+Remaining limits: terrain outside the loaded DEM, spatially varying density,
+geoid/ellipsoid conversion, SRTM/GeoTIFF reading, geodetic-to-projected CRS
+conversion, per-station geodetic position derivation, and direct IGRF correction
+controls in the legacy profile-import panel are deferred. The legacy profile
+magnetic field is an anomaly, so it is intentionally not relabelled as raw
+total field to enable subtraction. The grid spectral workflow requires complete
+regular XYZ input; automated missing-cell infill, GIS reprojection, and
+multi-source Euler uncertainty estimates are also deferred.

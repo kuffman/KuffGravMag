@@ -15,6 +15,8 @@ import numpy as np
 from scipy.interpolate import griddata
 
 from engine.survey import BaseStationSeries, SurveyProfile, _utc_datetime
+from engine.igrf import COEFFICIENT_SHA256, igrf14_main_field
+from engine.terrain import TerrainDEM, terrain_correction as calculate_terrain_correction
 
 
 def _array_digest(values: np.ndarray) -> str:
@@ -193,6 +195,143 @@ def apply_gravity_reductions(
         parameters["bouguer_density_kg_m3"] = None
     return ProcessingProduct(
         "gravity_reduction", columns, units, parameters, tuple(assumptions), _profile_digest(profile)
+    )
+
+
+def apply_igrf_main_field_correction(
+    total_field_nt,
+    *,
+    latitude_geodetic_deg,
+    longitude_east_deg,
+    altitude_ellipsoid_m,
+    dates,
+) -> ProcessingProduct:
+    """Subtract the IGRF-14 total main field from raw total-field readings.
+
+    This function deliberately accepts raw total-field observations, not the
+    existing ``SurveyProfile.magnetic_anomaly_nt`` channel. Coordinates,
+    WGS-84 ellipsoid altitudes, and UTC dates (or decimal years) are explicit at
+    each station. The vector components used to form total intensity are kept in
+    the processing output for auditability.
+    """
+    observed = np.asarray(total_field_nt, dtype=np.float64)
+    latitude = np.asarray(latitude_geodetic_deg, dtype=np.float64)
+    longitude = np.asarray(longitude_east_deg, dtype=np.float64)
+    altitude = np.asarray(altitude_ellipsoid_m, dtype=np.float64)
+    raw_dates = tuple(dates)
+    if observed.ndim != 1 or observed.size == 0:
+        raise ValueError("total_field_nt must be a non-empty one-dimensional vector")
+    if any(values.shape != observed.shape for values in (latitude, longitude, altitude)) or len(raw_dates) != observed.size:
+        raise ValueError("IGRF dates, coordinates, altitudes, and total-field observations must align")
+    if not all(np.all(np.isfinite(values)) for values in (observed, latitude, longitude, altitude)):
+        raise ValueError("IGRF observations, coordinates, and altitudes must be finite")
+    results = [
+        igrf14_main_field(float(lat), float(lon), float(height), when)
+        for lat, lon, height, when in zip(latitude, longitude, altitude, raw_dates)
+    ]
+    decimal_years = [float(result.decimal_year) for result in results]
+    input_digest = hashlib.sha256()
+    for values in (observed, latitude, longitude, altitude):
+        input_digest.update(np.asarray(values, dtype="<f8").tobytes())
+    input_digest.update(json.dumps(decimal_years, separators=(",", ":")).encode("ascii"))
+    columns = {
+        "total_field_observed_nt": observed,
+        "igrf_north_nt": np.array([result.north_nt for result in results]),
+        "igrf_east_nt": np.array([result.east_nt for result in results]),
+        "igrf_down_nt": np.array([result.down_nt for result in results]),
+        "igrf_total_field_nt": np.array([result.total_nt for result in results]),
+        "magnetic_igrf_corrected_nt": observed - np.array([result.total_nt for result in results]),
+    }
+    parameters = {
+        "model": "IGRF-14",
+        "coefficient_sha256": COEFFICIENT_SHA256,
+        "valid_decimal_year_range": [1900.0, 2030.0],
+        "date_decimal_year": decimal_years,
+        "latitude_geodetic_deg": latitude.tolist(),
+        "longitude_east_deg": longitude.tolist(),
+        "altitude_ellipsoid_m_wgs84": altitude.tolist(),
+        "component_convention": "north/east/down; X north, Y east, Z positive down; D east of true north; I positive down",
+        "subtraction": "raw total field minus IGRF total intensity F",
+    }
+    return ProcessingProduct(
+        "igrf14_main_field_correction",
+        columns,
+        {name: "nT" for name in columns},
+        parameters,
+        (
+            "Input values are raw total-field observations; do not apply this to a magnetic anomaly that already has a reference field removed.",
+            "IGRF-14 main-field vectors use geodetic WGS-84 latitude/longitude and altitude above the WGS-84 ellipsoid.",
+            "Dates are evaluated as UTC decimal years using the pinned IGRF-14 coefficient file; supported range is 1900.0–2030.0.",
+            "The correction subtracts total intensity F; IGRF omits local crustal anomalies and time-varying external-field disturbances.",
+        ),
+        input_digest.hexdigest(),
+    )
+
+
+def apply_dem_terrain_correction(
+    dem: TerrainDEM,
+    station_x_m,
+    station_y_m,
+    station_elevation_m,
+    *,
+    station_coordinate_reference: str,
+    reference_elevation_m: float,
+    density_kg_m3: float,
+    elevation_datum: str,
+) -> ProcessingProduct:
+    """Create an exportable, assumption-recorded DEM residual-terrain product."""
+    result = calculate_terrain_correction(
+        dem, station_x_m, station_y_m, station_elevation_m,
+        station_coordinate_reference=station_coordinate_reference,
+        reference_elevation_m=reference_elevation_m,
+        density_kg_m3=density_kg_m3,
+        elevation_datum=elevation_datum,
+    )
+    x, y, z = (np.asarray(values, dtype=np.float64) for values in
+               (station_x_m, station_y_m, station_elevation_m))
+    source_digest = hashlib.sha256()
+    for values in (dem.x_m, dem.y_m, dem.elevation_m, x, y, z):
+        source_digest.update(np.asarray(values, dtype="<f8").tobytes())
+    source_digest.update(json.dumps({
+        "reference_elevation_m": float(reference_elevation_m),
+        "density_kg_m3": float(density_kg_m3),
+        "coordinate_reference": dem.coordinate_reference,
+        "elevation_datum": dem.elevation_datum,
+    }, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+    parameters = dict(result.parameters)
+    parameters.update({
+        "station_x_m": x.tolist(),
+        "station_y_m": y.tolist(),
+        "station_elevation_m": z.tolist(),
+        "dem_x_cell_centres_m": dem.x_m.tolist(),
+        "dem_y_cell_centres_m": dem.y_m.tolist(),
+    })
+    dem_rows = io.StringIO(newline="")
+    dem_writer = csv.writer(dem_rows, lineterminator="\n")
+    dem_writer.writerow(["x_m", "y_m", "elevation_m"])
+    for row, y_value in enumerate(dem.y_m):
+        for column, x_value in enumerate(dem.x_m):
+            dem_writer.writerow((
+                format(float(x_value), ".17g"), format(float(y_value), ".17g"),
+                format(float(dem.elevation_m[row, column]), ".17g"),
+            ))
+    station_rows = io.StringIO(newline="")
+    station_writer = csv.writer(station_rows, lineterminator="\n")
+    station_writer.writerow(["station_x_m", "station_y_m", "station_elevation_m"])
+    station_writer.writerows(zip(
+        (format(float(value), ".17g") for value in x),
+        (format(float(value), ".17g") for value in y),
+        (format(float(value), ".17g") for value in z),
+    ))
+    return ProcessingProduct(
+        "dem_residual_terrain_correction",
+        {"terrain_residual_down_mgal": result.gravity_down_mgal},
+        {"terrain_residual_down_mgal": "mGal"},
+        parameters,
+        result.assumptions,
+        source_digest.hexdigest(),
+        {"terrain_dem_xyz.csv": dem_rows.getvalue().encode("utf-8"),
+         "terrain_stations.csv": station_rows.getvalue().encode("utf-8")},
     )
 
 

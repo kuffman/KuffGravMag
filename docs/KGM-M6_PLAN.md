@@ -3,9 +3,9 @@
 KGM-M5 was merged to `main` in merge commit `53b8ddc`. KGM-M6 implementation
 begins from that integrated baseline and is delivered in reviewable stages.
 
-## M6.1 — validated profile-processing core
+## M6 baseline — validated profile-processing core
 
-Implemented on `codex/kgm-m6-processing-core`:
+Implemented in PR #7 on `codex/kgm-m6-processing-core`:
 
 - Versioned profile and base-station schemas with explicit units, coordinate
   metadata, missing-value behavior, and source hashes.
@@ -20,11 +20,30 @@ Implemented on `codex/kgm-m6-processing-core`:
 - Desktop/web profile-processing controls, project JSON schema version 2, and
   reproducible processing-bundle export.
 
-The equations, input schemas, limitations, and benchmark coverage are recorded
-in [KGM-M6 processing](KGM-M6_PROCESSING.md). Terrain corrections, IGRF/main-field
-corrections, stabilized low-latitude reductions, and interactive Euler-grid
-controls remain deferred pending validated inputs, independent references, or
-a tested interpretation workflow.
+## M6.1 — terrain, IGRF, and grid interpretation
+
+Implemented on `codex/kgm-m61-validated-interpretation`, based on the merged
+M6 baseline:
+
+- Cell-centred regular DEM residual-terrain attraction using explicit metric
+  geometry, matched elevation datum, reference plane, station elevations, and
+  density; exported as a provenance-bearing processing product.
+- Offline IGRF-14 vector evaluation using the bundled coefficient file and
+  explicit WGS-84 location, ellipsoid altitude, date, validity range, and N/E/down
+  component convention. Raw total-field correction subtracts model F and keeps
+  the field vector and location metadata.
+- Tikhonov-regularized magnetic direction transforms with explicit field,
+  magnetization, and target directions; maximum/RMS/noise-gain diagnostics and
+  a configured gain limit.
+- Moving Euler windows with index, stride, condition and RMS filters, plus
+  structural-index-zero support without a fitted base level.
+- Band-limited spectral source-population depth with slope uncertainty and R².
+- Desktop and web grid interpretation panels for complete regular XYZ grids.
+
+The equations, schemas, limitations, and independent reference coverage are
+recorded in [KGM-M6 processing](KGM-M6_PROCESSING.md). GeoTIFF/SRTM loading,
+CRS conversion, terrain outside the DEM, deriving per-station geodetic positions,
+and direct IGRF controls in the legacy anomaly-profile panel remain deferred.
 
 ## Goal
 
@@ -72,14 +91,18 @@ explicit units, coordinate metadata, and a record of its input assumptions.
 - Desktop, web, and PDF smokes pass in CI before the processing interface is
   considered complete.
 
-## Decisions to settle before implementation
+## Deferred follow-up decisions
 
-- Required gravity and magnetic input formats and coordinate reference.
-- Elevation datum, terrain-data source, and default Bouguer density.
-- Supported magnetic reference-field model and its date/location metadata.
-- Whether regional separation defaults to a polynomial, a wavelength filter,
-  or a user-selected method.
-- How processing uncertainty and filter edge effects appear in the interface.
+- Supported DEM file readers and CRS conversion, including how station
+  coordinates and DEM vertical datums are transformed.
+- Per-station geodetic coordinate derivation and explicit raw-total-field input
+  in the legacy survey import workflow; current magnetic profile channels are
+  anomalies and are not eligible for IGRF subtraction.
+- Multi-source and noisy-field uncertainty for Euler clustering and
+  low-latitude transforms.
+- Project persistence for regular-grid and interpretation outputs.
 
-Do not start these work packages as part of KGM-M5. The current pull request
-should include only this planning document for M6.
+KGM-M7 is planned as a separate dependent pull request after M6.1 review. It
+will focus on project navigation and recovery, a coherent geological editing
+workflow, richer scientific plots and grid/GIS views, 3D prism visualization,
+and report export while keeping the validated Python engine unchanged.

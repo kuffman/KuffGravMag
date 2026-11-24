@@ -28,6 +28,7 @@ from engine.processing import (
     RegularProfile,
 )
 from engine.spectral import transform_profile
+from ui.grid_interpretation import GridInterpretationDialog
 
 COLOR_OPTIONS = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown']
 
@@ -202,7 +203,8 @@ class SurveyProcessingDialog(QDialog):
         root.addWidget(self.log, stretch=1)
         self.note = QLabel(
             "The processing package records raw channels, units, assumptions, parameters, and hashes. "
-            "Terrain corrections and IGRF/main-field subtraction are not included."
+            "DEM terrain residuals and IGRF-14 raw total-field corrections are available through the processing API; "
+            "this profile panel lacks station map coordinates, and its magnetic channel is already an anomaly."
         )
         self.note.setWordWrap(True)
         root.addWidget(self.note)
@@ -654,6 +656,10 @@ class MainWindow(QMainWindow):
         import_grid_action.triggered.connect(self.import_3d_grid_csv)
         file_menu.addAction(import_grid_action)
 
+        interpret_grid_action = QAction("Interpret Regular 3D Grid (XYZ)…", self)
+        interpret_grid_action.triggered.connect(self.open_grid_interpretation)
+        file_menu.addAction(interpret_grid_action)
+
         import_obs_action = QAction("Import 2D Observed Line (CSV)", self)
         import_obs_action.triggered.connect(self.import_observed_csv)
         file_menu.addAction(import_obs_action)
@@ -826,6 +832,36 @@ class MainWindow(QMainWindow):
                 QMessageBox.information(self, "Success", "2D Profile extracted from 3D Map.")
         except Exception as e:
             QMessageBox.critical(self, "Import Error", f"Could not process grid:\n{str(e)}")
+
+    def open_grid_interpretation(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Interpret regular XYZ grid", "", "CSV / text grids (*.csv *.txt *.dat);;All files (*)"
+        )
+        if not file_path:
+            return
+        try:
+            x, y, values = [], [], []
+            with open(file_path, "r", encoding="utf-8-sig") as source:
+                for line in source:
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    try:
+                        row = stripped.replace(",", " ").split()
+                        x.append(float(row[0]))
+                        y.append(float(row[1]))
+                        values.append(float(row[2]))
+                    except (ValueError, IndexError):
+                        continue
+            if len(values) < 64:
+                raise ValueError("Regular grid interpretation needs at least 8 by 8 complete XYZ cells.")
+            dialog = GridInterpretationDialog(
+                self, np.asarray(x), np.asarray(y), np.asarray(values),
+                field_inclination_deg=self.spin_Inc.value(), field_declination_deg=self.spin_Dec.value(),
+            )
+            dialog.exec()
+        except Exception as exc:
+            QMessageBox.critical(self, "Grid interpretation input error", str(exc))
 
     def import_observed_csv(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Import Observed Profile", "",
