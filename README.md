@@ -1,6 +1,6 @@
 # KuffGravMag
 
-KuffGravMag is a desktop and web workbench for gravity and magnetic profile modelling. Infinite Strike kernels use validated 2D calculations; Finite Strike mode evaluates the actual extruded 3D polygonal prism with closed-form face integrals. The inversion engine remains outside the validated scope.
+KuffGravMag is a desktop and web workbench for gravity and magnetic profile modelling. Infinite Strike kernels use validated 2D calculations; Finite Strike mode evaluates the actual extruded 3D polygonal prism with closed-form face integrals. The bounded inversion workflow and its synthetic reliability checks are documented separately; inversion solutions remain potentially non-unique.
 
 ## Reproducible Python setup
 
@@ -26,6 +26,10 @@ uv run --locked python app.py
 
 # Windows packaging tools, in addition to the desktop group
 uv sync --locked --group desktop --group build
+
+# Independent scientific reference comparisons and report generation
+uv sync --locked --group validation
+uv run --locked --group validation python -m validation.report --check docs/VALIDATION_REPORT.md
 ```
 
 To install every group in one environment, use `uv sync --locked --all-groups`. The legacy `requirements.txt` remains for older workflows; the uv lockfile is the reproducible dependency source.
@@ -36,10 +40,14 @@ To install every group in one environment, use `uv sync --locked --all-groups`. 
 uv run --locked python -m pytest -q
 ```
 
-The scientific suite covers infinite-strike gravity and magnetic references, finite-strike rectangular-prism formulas, independent 3D volume integration, all magnetic components, field-angle projection, winding, symmetry, superposition, susceptibility scaling, strike-mode compatibility, and project round-tripping. See [the validation record](docs/BASELINE_AND_VALIDATION.md), [the gravity method note](docs/SCIENTIFIC_METHODS.md), [the magnetic method note](docs/MAGNETIC_METHOD.md), and [the finite-prism method note](docs/FINITE_STRIKE_METHOD.md).
+The scientific suite covers infinite-strike gravity and magnetic references, finite-strike rectangular-prism formulas, independent 3D volume integration, Harmonica comparisons, numerical stress, and synthetic inversion noise, tradeoffs, and uncertainty. See the [KGM-M5 validation method](docs/SCIENTIFIC_VALIDATION.md), [reproducible validation report](docs/VALIDATION_REPORT.md), [baseline record](docs/BASELINE_AND_VALIDATION.md), [gravity method note](docs/SCIENTIFIC_METHODS.md), [magnetic method note](docs/MAGNETIC_METHOD.md), [finite-prism method note](docs/FINITE_STRIKE_METHOD.md), and [inversion method note](docs/INVERSION_METHOD.md).
 
 ## Scope and limitations
 
-The desktop, web, and PDF outputs distinguish benchmarked Infinite Strike 2D kernels from validated Finite Strike prism integrals. The interfaces expose field intensity, inclination, declination, profile azimuth, remanent orientation, strike mode, and strike bounds. JSON projects preserve the model and observations; PDF reports include the field settings, body properties, strike mode, bounds, and vertices. Finite magnetics assumes uniform magnetization and no self-demagnetization. Inversion behavior remains follow-up work.
+The desktop, web, and PDF outputs distinguish benchmarked Infinite Strike 2D kernels from validated Finite Strike prism integrals. The interfaces expose field intensity, inclination, declination, profile azimuth, remanent orientation, strike mode, and strike bounds. JSON projects preserve the model and observations; PDF reports include the field settings, body properties, strike mode, bounds, and vertices. Finite magnetics assumes uniform magnetization and no self-demagnetization. Inversion uncertainty is a local approximation, and different body properties or depths can explain similar potential-field data.
 
-GitHub Actions runs the locked scientific regression suite on pushes and pull requests. The existing Windows packaging workflow remains separate.
+GitHub Actions runs the locked scientific suite, optional Harmonica comparison, and reproducible report check on pull requests and branch pushes. The Windows packaging workflow also builds the application.
+
+## Next roadmap
+
+KGM-M6 is planned in [docs/KGM-M6_PLAN.md](docs/KGM-M6_PLAN.md). It covers data provenance, gravity and magnetic corrections, regional/residual separation, continuation and derivatives, analytical signal, Euler deconvolution, and low-latitude magnetic interpretation. M6 implementation begins after M5 review and acceptance.

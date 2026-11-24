@@ -6,7 +6,7 @@ import numpy as np
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QFormLayout, QDoubleSpinBox, QPushButton, QGroupBox, QListWidget,
-    QComboBox, QLabel, QFileDialog, QMessageBox, QDialog
+    QComboBox, QLabel, QFileDialog, QMessageBox, QDialog, QCheckBox
 )
 from PyQt6.QtGui import QAction
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -255,6 +255,26 @@ class MainWindow(QMainWindow):
         self.btn_invert_mag.clicked.connect(lambda: self.run_inversion('magnetics'))
         inv_layout.addWidget(self.btn_invert_mag)
 
+        inversion_options = QFormLayout()
+        self.spin_inversion_sigma = QDoubleSpinBox()
+        self.spin_inversion_sigma.setRange(1e-6, 1e6)
+        self.spin_inversion_sigma.setDecimals(6)
+        self.spin_inversion_sigma.setValue(1.0)
+        self.spin_inversion_sigma.setToolTip("Observation standard deviation in mGal for gravity or nT for magnetics")
+        inversion_options.addRow("Observation sigma (mGal / nT):", self.spin_inversion_sigma)
+
+        self.spin_inversion_regularization = QDoubleSpinBox()
+        self.spin_inversion_regularization.setRange(0.0, 1e6)
+        self.spin_inversion_regularization.setDecimals(4)
+        self.spin_inversion_regularization.setValue(0.0)
+        self.spin_inversion_regularization.setToolTip("Dimensionless regularization strength lambda")
+        inversion_options.addRow("Regularization lambda:", self.spin_inversion_regularization)
+
+        self.check_fit_geometry = QCheckBox("Fit constrained depth shift and scale")
+        self.check_fit_geometry.setChecked(False)
+        inversion_options.addRow(self.check_fit_geometry)
+        inv_layout.addLayout(inversion_options)
+
         left_panel.addWidget(inv_group)
 
         pdf_btn = QPushButton("📄 Generate PDF Report")
@@ -323,16 +343,52 @@ class MainWindow(QMainWindow):
             return
 
         active_body = self.bodies[self.active_body_idx]
-        field_params = {'F': self.spin_F.value(), 'Inc': self.spin_Inc.value()}
+        field_params = {
+            'F': self.spin_F.value(),
+            'Inc': self.spin_Inc.value(),
+            'Dec': self.spin_Dec.value(),
+            'alpha': self.spin_alpha.value(),
+        }
 
-        success = invert_body_parameters(active_body, self.x_obs, self.z_obs, target_data, field_type, field_params)
-        if success:
+        result = invert_body_parameters(
+            active_body,
+            self.x_obs,
+            self.z_obs,
+            target_data,
+            all_bodies=self.bodies,
+            field_type=field_type,
+            field_params=field_params,
+            observation_sigma=self.spin_inversion_sigma.value(),
+            regularization=self.spin_inversion_regularization.value(),
+            fit_geometry=self.check_fit_geometry.isChecked(),
+        )
+        if result.success:
             self.load_active_body_props()
             self.recalculate_and_plot()
-            QMessageBox.information(self, "Inversion Successful",
-                                    f"Successfully optimized {active_body.name} parameters to fit observed {field_type} data!")
+            diagnostics = (
+                f"Initial RMS: {result.initial_rms:.6g}\n"
+                f"Final RMS: {result.final_rms:.6g}\n"
+                f"Weighted RMS: {result.weighted_rms:.6g}\n"
+                f"Evaluations: {result.function_evaluations}\n"
+                f"Locally identifiable: {'yes' if result.identifiable else 'no'}"
+            )
+            if result.standard_errors:
+                errors = ", ".join(
+                    f"{name} +/- {value:.4g}" for name, value in result.standard_errors.items()
+                )
+                diagnostics += f"\nApproximate 1-sigma errors: {errors}"
+            box = QMessageBox.information if result.identifiable else QMessageBox.warning
+            box(
+                self,
+                "Inversion Converged" if result.identifiable else "Fit Converged; Model Is Non-unique",
+                f"{result.message}\n\n{diagnostics}",
+            )
         else:
-            QMessageBox.critical(self, "Inversion Failed", "Optimizer could not converge on a valid model solution.")
+            QMessageBox.critical(
+                self,
+                "Inversion Failed",
+                f"{result.status}: {result.message}\nThe starting model was preserved.",
+            )
 
     def on_press(self, event):
         if event.inaxes != self.ax_body or event.button != 1: return
@@ -707,6 +763,13 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    if not app.screens():
+        sys.stderr.write(
+            "KuffGravMag could not find an active display. The Qt platform plugin "
+            "loaded, but this process has no available screens. Launch the desktop "
+            "app from a logged-in graphical session.\n"
+        )
+        raise SystemExit(2)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
