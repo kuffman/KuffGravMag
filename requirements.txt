@@ -1,6 +1,10 @@
+# Legacy unlocked list. Use `uv sync --locked --all-groups` for the reproducible environment.
 streamlit
 numpy
 matplotlib
 pandas
 scipy
 reportlab
+PyQt6
+PyInstaller
+pytest

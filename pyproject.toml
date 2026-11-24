@@ -1,0 +1,38 @@
+[project]
+name = "kuffgravmag"
+version = "0.1.0"
+description = "2D gravity and magnetic forward modelling workbench"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "numpy>=1.26,<3",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3,<9",
+]
+web = [
+    "matplotlib>=3.8,<4",
+    "pandas>=2.1,<4",
+    "reportlab>=4,<5",
+    "scipy>=1.11,<2",
+    "streamlit>=1.32,<2",
+]
+desktop = [
+    "matplotlib>=3.8,<4",
+    "PyQt6>=6.6,<7",
+    "reportlab>=4,<5",
+    "scipy>=1.11,<2",
+]
+build = [
+    "pyinstaller>=6.6,<7",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+
+[tool.uv]
+package = false
+default-groups = ["dev"]

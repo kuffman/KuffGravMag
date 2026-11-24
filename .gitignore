@@ -1,6 +1,6 @@
-build/
-dist/
-dist_installer/
 .venv/
 __pycache__/
-*.DS_Store
+*.py[cod]
+.pytest_cache/
+build/
+dist/
