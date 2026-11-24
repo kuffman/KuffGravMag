@@ -302,4 +302,3 @@ def test_maximum_evaluations_is_not_reported_as_convergence_and_restores_model()
     assert not result.success
     assert result.status == "no_convergence"
     assert target.density == before
-

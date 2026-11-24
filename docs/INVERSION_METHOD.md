@@ -39,3 +39,13 @@ Local standard errors are estimated only for full-rank linear-loss fits with pos
 Synthetic tests recover density and susceptibility from the existing forward kernels, preserve fixed bodies in a multi-body model, and exercise per-observation weights, regularization, optional constrained geometry, noisy observations, invalid geometry, optimizer exhaustion, and underdetermined systems. The earlier 50 gravity, magnetic, finite-strike, and project/report regressions remain unchanged.
 
 The tests establish numerical behavior for the supplied synthetic models. They do not establish field-data accuracy, arbitrary geometry recovery, or uniqueness of potential-field inversion. Interpret converged but non-identifiable results as one fit among multiple plausible models.
+
+## KGM-M5 noise and tradeoff study
+
+KGM-M5 adds a fixed-seed, paired-noise density recovery ensemble at `0.01`,
+`0.03`, and `0.1 mGal`, and records parameter bias, RMSE, local standard
+errors, and empirical interval coverage. It also constructs a shallow and a
+deeper density model that match one station but differ over a full profile.
+The experiment settings, tolerances, limitations, and measured results are in
+[SCIENTIFIC_VALIDATION.md](SCIENTIFIC_VALIDATION.md) and
+[VALIDATION_REPORT.md](VALIDATION_REPORT.md).

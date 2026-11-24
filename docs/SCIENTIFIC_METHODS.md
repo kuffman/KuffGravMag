@@ -65,7 +65,14 @@ KGM-M2's infinite-strike magnetic edge-charge method and field-angle conventions
 - These checks establish synthetic mathematical consistency for the 2D gravity reference and finite polygonal-prism field equations. They do not validate field data or inversion. Magnetic validation is recorded in [MAGNETIC_METHOD.md](MAGNETIC_METHOD.md) and [FINITE_STRIKE_METHOD.md](FINITE_STRIKE_METHOD.md).
 - `.github/workflows/scientific-tests.yml` installs the locked Python test environment and runs the suite on pushes and pull requests.
 
-## Next milestones
+## Scientific validation and next milestone
 
-1. **KGM-M4 — inversion:** repair desktop argument binding, report optimizer convergence honestly, add physical bounds and geometry checks, and test recovery on synthetic data.
-2. **Later — reproducible data flow:** document input schemas and coordinate metadata, and make generated reports session-safe.
+KGM-M4 introduced the bounded inversion workflow. KGM-M5 independently checks
+its noise response, uncertainty diagnostics, and density-depth tradeoffs, and
+adds reusable prism references plus Harmonica comparisons. See
+[SCIENTIFIC_VALIDATION.md](SCIENTIFIC_VALIDATION.md) and the generated
+[VALIDATION_REPORT.md](VALIDATION_REPORT.md).
+
+The next planned milestone is **KGM-M6 — geophysical data processing**. Its
+scope and acceptance gates are recorded in [KGM-M6_PLAN.md](KGM-M6_PLAN.md);
+implementation starts only after M5 review and acceptance.
