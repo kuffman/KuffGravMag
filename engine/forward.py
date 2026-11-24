@@ -70,7 +70,7 @@ class PotentialField2D:
         return x_obs, z_obs
 
     @staticmethod
-    def _prepare_gravity_polygon(x, z):
+    def _prepare_polygon(x, z):
         try:
             x = np.asarray(x, dtype=np.float64)
             z = np.asarray(z, dtype=np.float64)
@@ -186,7 +186,7 @@ class PotentialField2D:
 
     def _calc_single_gravity_25d(self, x_obs, z_obs, x, z, density, y1, y2):
         x_obs, z_obs = self._validate_observations(x_obs, z_obs)
-        x, z, orientation, reference_length, coordinate_tolerance = self._prepare_gravity_polygon(x, z)
+        x, z, orientation, reference_length, coordinate_tolerance = self._prepare_polygon(x, z)
 
         try:
             density = float(density)
@@ -244,6 +244,7 @@ class PotentialField2D:
         return gz
 
     def calculate_magnetics(self, x_obs, z_obs, F_nT, I_f, D_f, alpha):
+        x_obs, z_obs = self._validate_observations(x_obs, z_obs)
         dX_total = np.zeros_like(x_obs, dtype=np.float64)
         dZ_total = np.zeros_like(x_obs, dtype=np.float64)
         dT_total = np.zeros_like(x_obs, dtype=np.float64)
@@ -260,65 +261,97 @@ class PotentialField2D:
         return dX_total, dZ_total, dT_total
 
     def _calc_single_magnetics_25d(self, x_obs, z_obs, x, z, k_succ, F_nT, I_f, D_f, alpha, J_r, I_r, D_r, y1, y2):
-        rad = np.pi / 180.0
-        I_f_r, D_f_r, alpha_r = I_f * rad, D_f * rad, alpha * rad
-        I_r_r, D_r_r = I_r * rad, D_r * rad
+        x_obs, z_obs = self._validate_observations(x_obs, z_obs)
+        x, z, orientation, _, coordinate_tolerance = self._prepare_polygon(x, z)
+        try:
+            k_succ, F_nT, I_f, D_f, alpha, J_r, I_r, D_r, y1, y2 = map(
+                float, (k_succ, F_nT, I_f, D_f, alpha, J_r, I_r, D_r, y1, y2)
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Magnetic parameters must be numeric") from exc
+        parameters = (k_succ, F_nT, I_f, D_f, alpha, J_r, I_r, D_r, y1, y2)
+        if not all(math.isfinite(value) for value in parameters):
+            if not is_infinite_strike_reference(y1, y2):
+                raise ValueError("Magnetic parameters and finite strike bounds must be finite")
+            if not all(math.isfinite(value) for value in parameters[:-2]):
+                raise ValueError("Magnetic parameters must be finite")
+        if y1 > y2:
+            raise ValueError("Strike bounds must be ordered")
 
-        mu0 = 4 * np.pi * 1e-7
-        H_i = (F_nT * 1e-9) / mu0
-        J_i = k_succ * H_i
+        rad = math.pi / 180.0
+        inclination = I_f * rad
+        horizontal_angle = (D_f - alpha) * rad
+        remanent_inclination = I_r * rad
+        remanent_declination = (D_r - alpha) * rad
+        mu0 = 4.0 * math.pi * 1e-7
+        H0 = F_nT * 1e-9 / mu0
+        Mx = (
+            k_succ * H0 * math.cos(inclination) * math.cos(horizontal_angle)
+            + J_r * math.cos(remanent_inclination) * math.cos(remanent_declination)
+        )
+        Mz = k_succ * H0 * math.sin(inclination) + J_r * math.sin(remanent_inclination)
 
-        Jx = J_i * np.cos(I_f_r) * np.cos(D_f_r - alpha_r) + J_r * np.cos(I_r_r) * np.cos(D_r_r - alpha_r)
-        Jz = J_i * np.sin(I_f_r) + J_r * np.sin(I_r_r)
+        infinite_strike = is_infinite_strike_reference(y1, y2)
+        y_avg = 0.5 * abs(y1) + 0.5 * abs(y2) if not infinite_strike else math.inf
+        dX_nT = np.zeros_like(x_obs, dtype=np.float64)
+        dZ_nT = np.zeros_like(x_obs, dtype=np.float64)
 
-        J_prime = np.hypot(Jx, Jz)
-        I_prime = np.arctan2(Jz, Jx)
-
-        dX = np.zeros_like(x_obs, dtype=np.float64)
-        dZ = np.zeros_like(x_obs, dtype=np.float64)
-        n_sides = len(x) - 1
-        y_avg = 0.5 * (abs(y1) + abs(y2))
-
-        for i in range(n_sides):
-            x1, z1 = x[i], z[i]
-            x2, z2 = x[i + 1], z[i + 1]
-            dx, dz = x2 - x1, z2 - z1
-
-            if dx == 0 and dz == 0:
-                continue
-
-            phi = np.arctan2(dz, dx)
-
-            for j, (xo, zo) in enumerate(zip(x_obs, z_obs)):
-                rx1, rz1 = x1 - xo, z1 - zo
-                rx2, rz2 = x2 - xo, z2 - zo
-                r1, r2 = np.hypot(rx1, rz1), np.hypot(rx2, rz2)
-
-                if r1 < 1e-6 or r2 < 1e-6:
+        # A uniform 2D magnetization has no volume poles. Its field comes from
+        # the boundary charge sigma_m = M dot n, evaluated as an edge integral.
+        for j, (xo, zo) in enumerate(zip(x_obs, z_obs)):
+            bx_sum = 0.0
+            bz_sum = 0.0
+            for i in range(len(x) - 1):
+                x1, z1 = x[i], z[i]
+                dx, dz = x[i + 1] - x1, z[i + 1] - z1
+                edge_length = math.hypot(dx, dz)
+                if edge_length <= coordinate_tolerance:
                     continue
+                ux, uz = dx / edge_length, dz / edge_length
 
-                theta1, theta2 = np.arctan2(rz1, rx1), np.arctan2(rz2, rx2)
-                dtheta = theta2 - theta1
-                if dtheta > np.pi:
-                    dtheta -= 2 * np.pi
-                elif dtheta < -np.pi:
-                    dtheta += 2 * np.pi
+                # The left normal points inward for a positively wound ring.
+                nx, nz = -uz, ux
+                rx, rz = xo - x1, zo - z1
+                u1 = rx * ux + rz * uz
+                q = rx * nx + rz * nz
+                u2 = u1 - edge_length
+                radius1, radius2 = math.hypot(u1, q), math.hypot(u2, q)
+                if radius1 == 0.0 or radius2 == 0.0:
+                    raise ValueError("Magnetic field is singular at a polygon vertex")
 
-                ln_r = np.log(r2 / r1)
-                P_i = dtheta * np.sin(phi) * np.cos(phi) + (np.cos(phi) ** 2) * ln_r
-                Q_i = dtheta * (np.cos(phi) ** 2) - np.sin(phi) * np.cos(phi) * ln_r
+                tangent_integral = math.log(radius1) - math.log(radius2)
+                if q == 0.0:
+                    # Principal-value convention at an edge interior: mean of
+                    # the two one-sided normal fields.
+                    normal_integral = 0.0
+                else:
+                    q_sign = 1.0 if q > 0.0 else -1.0
+                    normal_integral = math.atan2(q_sign * u1, abs(q)) - math.atan2(
+                        q_sign * u2, abs(q)
+                    )
 
-                r_mid = 0.5 * (r1 + r2)
-                strike_factor = y_avg / np.sqrt(r_mid ** 2 + y_avg ** 2) if y_avg > 0 else 1.0
+                integral_x = ux * tangent_integral + nx * normal_integral
+                integral_z = uz * tangent_integral + nz * normal_integral
+                surface_charge_factor = orientation * (Mx * uz - Mz * ux)
 
-                dX[j] += (P_i * np.sin(I_prime) - Q_i * np.cos(I_prime)) * strike_factor
-                dZ[j] += (P_i * np.cos(I_prime) + Q_i * np.sin(I_prime)) * strike_factor
+                if infinite_strike or y_avg == 0.0:
+                    strike_factor = 1.0
+                else:
+                    r1 = math.hypot(x1 - xo, z1 - zo)
+                    r2 = math.hypot(x[i + 1] - xo, z[i + 1] - zo)
+                    r_mid = 0.5 * (r1 + r2)
+                    # Retained only as the legacy finite-strike midpoint approximation.
+                    strike_factor = y_avg / math.hypot(r_mid, y_avg)
 
-        scale = 200.0 * J_prime
-        dX_nT = dX * scale
-        dZ_nT = dZ * scale
+                bx_sum += surface_charge_factor * integral_x * strike_factor
+                bz_sum += surface_charge_factor * integral_z * strike_factor
 
-        cos_I_prime_f = np.cos(np.arctan(np.tan(I_f_r) / np.cos(D_f_r - alpha_r)))
-        dT_nT = dX_nT * cos_I_prime_f * np.cos(D_f_r - alpha_r) + dZ_nT * np.sin(I_f_r)
+            scale_nT = mu0 / (2.0 * math.pi) * 1e9
+            dX_nT[j] = scale_nT * bx_sum
+            dZ_nT[j] = scale_nT * bz_sum
 
+        dT_nT = (
+            dX_nT * math.cos(inclination) * math.cos(horizontal_angle)
+            + dZ_nT * math.sin(inclination)
+        )
         return dX_nT, dZ_nT, dT_nT
