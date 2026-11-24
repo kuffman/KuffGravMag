@@ -1,5 +1,7 @@
 import os
 import tempfile
+import json
+import hashlib
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -7,10 +9,11 @@ import streamlit as st
 from scipy.interpolate import griddata
 
 # Core computational backend engine imports
-from engine.forward import Body2D, PotentialField2D, is_infinite_strike_reference
+from engine.forward import Body2D, PotentialField2D
 from engine.inversion import invert_body_parameters
 from engine.grid import extract_profile_from_xyz
 from engine.report import generate_pdf_report
+from engine.project import load_project as read_project, project_to_dict
 
 COLOR_OPTIONS = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown']
 
@@ -33,6 +36,40 @@ if 'bodies' not in st.session_state:
 if 'active_idx' not in st.session_state:
     st.session_state.active_idx = 0
 
+for key, default in (("field_F", 48000.0), ("field_Inc", 55.0),
+                     ("field_Dec", 0.0), ("field_alpha", 0.0)):
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+project_upload = st.sidebar.file_uploader(
+    "Load KuffGravMag project (JSON)", type=["json"], key="project_upload"
+)
+if project_upload is not None:
+    project_bytes = project_upload.getvalue()
+    project_digest = hashlib.sha256(project_bytes).hexdigest()
+    if st.session_state.get("loaded_project_digest") != project_digest:
+        try:
+            project = read_project(json.loads(project_bytes.decode("utf-8")))
+            if not project["bodies"]:
+                raise ValueError("Project has no bodies")
+            st.session_state.bodies = project["bodies"]
+            st.session_state.active_idx = 0
+            field_values = project["field_params"]
+            st.session_state.field_F = field_values.get("F", 48000.0)
+            st.session_state.field_Inc = field_values.get("Inc", 55.0)
+            st.session_state.field_Dec = field_values.get("Dec", 0.0)
+            st.session_state.field_alpha = field_values.get("Alpha", 0.0)
+            observations = project["observations"]
+            if observations["x"] is not None and observations["z"] is not None:
+                st.session_state.x_obs = observations["x"]
+                st.session_state.z_obs = observations["z"]
+            st.session_state.obs_gz = observations["gravity"]
+            st.session_state.obs_dT = observations["magnetic"]
+            st.session_state.loaded_project_digest = project_digest
+            st.rerun()
+        except Exception as exc:
+            st.sidebar.error(f"Could not load project: {exc}")
+
 if 'x_obs' not in st.session_state:
     st.session_state.x_obs = np.linspace(-1000, 1000, 250)
     st.session_state.z_obs = np.zeros_like(st.session_state.x_obs)
@@ -43,9 +80,14 @@ st.title("🌐 KuffGravMag — 2.5D Mobile Workbench")
 
 # --- Sidebar Controls ---
 st.sidebar.header("🌍 Regional Ambient Field")
-spin_F = st.sidebar.number_input("Earth Field (F in nT)", min_value=10000.0, max_value=70000.0, value=48000.0,
-                                 step=500.0)
-spin_Inc = st.sidebar.number_input("Field Inclination (deg)", min_value=-90.0, max_value=90.0, value=55.0, step=1.0)
+spin_F = st.sidebar.number_input("Earth Field (F in nT)", min_value=10000.0, max_value=70000.0,
+                                 step=500.0, key="field_F")
+spin_Inc = st.sidebar.number_input("Field Inclination (deg)", min_value=-90.0, max_value=90.0,
+                                   step=1.0, key="field_Inc")
+spin_Dec = st.sidebar.number_input("Field Declination (deg)", min_value=-180.0, max_value=180.0,
+                                   step=1.0, key="field_Dec")
+spin_alpha = st.sidebar.number_input("Profile Azimuth (deg)", min_value=-180.0, max_value=180.0,
+                                     step=1.0, key="field_alpha")
 
 st.sidebar.markdown("---")
 st.sidebar.header("🧱 Subsurface Bodies (2.5D)")
@@ -56,6 +98,8 @@ selected_idx = st.sidebar.selectbox("Active Body Target", range(len(body_names))
                                     index=min(st.session_state.active_idx, len(body_names) - 1))
 st.session_state.active_idx = selected_idx
 active_body = st.session_state.bodies[st.session_state.active_idx]
+project_key = st.session_state.get("loaded_project_digest", "default")
+body_key = f"{project_key}_{st.session_state.active_idx}"
 
 # Add / Remove Buttons
 col_add, col_rem = st.sidebar.columns(2)
@@ -76,27 +120,46 @@ if col_rem.button("➖ Remove Body") and len(st.session_state.bodies) > 1:
 
 # Active Body Properties
 with st.sidebar.expander(f"⚙️ Properties: {active_body.name}", expanded=True):
-    active_body.density = st.number_input("Density Contrast (kg/m³)", value=float(active_body.density), step=10.0)
-    active_body.k_succ = st.number_input("Susceptibility (SI)", value=float(active_body.k_succ), format="%.4f",
-                                         step=0.005)
-    active_body.J_r = st.number_input("Remanence Jr (A/m)", value=float(active_body.J_r), step=0.5)
-    active_body.I_r = st.number_input("Remanent Inc Ir (deg)", value=float(active_body.I_r), step=5.0)
-    active_body.y_min = st.number_input("Strike Y-Min (m)", value=float(active_body.y_min), step=100.0)
-    active_body.y_max = st.number_input("Strike Y-Max (m)", value=float(active_body.y_max), step=100.0)
+    active_body.density = st.number_input("Density Contrast (kg/m³)", value=float(active_body.density),
+                                          step=10.0, key=f"density_{body_key}")
+    active_body.k_succ = st.number_input("Susceptibility (SI)", value=float(active_body.k_succ),
+                                         format="%.4f", step=0.005, key=f"susceptibility_{body_key}")
+    active_body.J_r = st.number_input("Remanence Jr (A/m)", value=float(active_body.J_r),
+                                      step=0.5, key=f"remanence_{body_key}")
+    active_body.I_r = st.number_input("Remanent Inc Ir (deg)", value=float(active_body.I_r),
+                                      step=5.0, key=f"remanent_inc_{body_key}")
+    active_body.D_r = st.number_input("Remanent Dec Dr (deg)", value=float(active_body.D_r),
+                                      step=5.0, key=f"remanent_dec_{body_key}")
+    strike_mode_label = st.selectbox(
+        "Strike Model", ["Infinite Strike", "Finite Strike"],
+        index=0 if active_body.strike_mode == "infinite" else 1,
+        key=f"strike_mode_{body_key}",
+    )
+    active_body.strike_mode = "infinite" if strike_mode_label == "Infinite Strike" else "finite"
+    if active_body.strike_mode == "finite":
+        active_body.y_min = st.number_input(
+            "Strike Y-Min (m)", min_value=-10_000_000.0, max_value=10_000_000.0,
+            value=float(active_body.y_min if np.isfinite(active_body.y_min) else -500.0),
+            step=100.0, key=f"strike_min_{body_key}",
+        )
+        active_body.y_max = st.number_input(
+            "Strike Y-Max (m)", min_value=-10_000_000.0, max_value=10_000_000.0,
+            value=float(active_body.y_max if np.isfinite(active_body.y_max) else 500.0),
+            step=100.0, key=f"strike_max_{body_key}",
+        )
 
     c_idx = COLOR_OPTIONS.index(active_body.color) if active_body.color in COLOR_OPTIONS else 0
-    active_body.color = st.selectbox("Display Color", COLOR_OPTIONS, index=c_idx)
+    active_body.color = st.selectbox("Display Color", COLOR_OPTIONS, index=c_idx,
+                                     key=f"color_{body_key}")
 
-if any(
-    not is_infinite_strike_reference(body.y_min, body.y_max)
-    for body in st.session_state.bodies
-):
+if any(body.strike_mode == "finite" for body in st.session_state.bodies):
     st.sidebar.warning(
-        "Finite-strike gravity uses an approximate midpoint correction and is not validated."
+        "Finite Strike gravity and magnetics use closed-form prism face integrals; "
+        "validated against rectangular-prism and independent volume references."
     )
 else:
     st.sidebar.success(
-        "Infinite-strike 2D gravity is checked against analytical and numerical benchmarks."
+        "Infinite Strike gravity and magnetics use benchmarked 2D kernels."
     )
 
 # Active Body Vertex Editor
@@ -269,15 +332,13 @@ with col_left:
 # Forward Field Calculations
 engine = PotentialField2D(st.session_state.bodies)
 gz_calc = engine.calculate_gravity(st.session_state.x_obs, st.session_state.z_obs)
-_, _, dT_calc = engine.calculate_magnetics(st.session_state.x_obs, st.session_state.z_obs, spin_F, spin_Inc, 0.0, 0.0)
-finite_strike_gravity = any(
-    not is_infinite_strike_reference(body.y_min, body.y_max)
-    for body in st.session_state.bodies
+_, _, _, dT_calc = engine.calculate_magnetics_components(
+    st.session_state.x_obs, st.session_state.z_obs, spin_F, spin_Inc, spin_Dec, spin_alpha
 )
-gravity_plot_label = (
-    "Approximate finite-strike gravity"
-    if finite_strike_gravity
-    else "2D infinite-strike gravity (benchmarked)"
+finite_strike_gravity = any(body.strike_mode == "finite" for body in st.session_state.bodies)
+infinite_strike_gravity = any(body.strike_mode == "infinite" for body in st.session_state.bodies)
+gravity_plot_label = "Finite Strike gravity (validated prism model)" if finite_strike_gravity else (
+    "Infinite Strike gravity (benchmarked 2D model)"
 )
 
 # Right Column: Field Plots
@@ -287,9 +348,13 @@ with col_right:
 
     # Gravity Plot
     if finite_strike_gravity:
-        st.warning(
-            "Finite-strike gravity is approximate: the midpoint correction is not validated."
+        st.info(
+            "Finite Strike gravity and magnetics use closed-form polygonal-prism face integrals, "
+            "validated against rectangular-prism and independent volume references. "
+            "Magnetics assume uniform magnetization and no self-demagnetization."
         )
+    elif infinite_strike_gravity:
+        st.success("Infinite Strike gravity and magnetics use benchmarked 2D kernels.")
     if st.session_state.obs_gz is not None:
         ax_g.plot(st.session_state.x_obs, st.session_state.obs_gz, 'r.', label='Observed (g)')
     ax_g.plot(st.session_state.x_obs, gz_calc, 'b-', lw=1.8, label=gravity_plot_label)
@@ -300,7 +365,11 @@ with col_right:
     # Magnetics Plot
     if st.session_state.obs_dT is not None:
         ax_m.plot(st.session_state.x_obs, st.session_state.obs_dT, 'r.', label='Observed (T)')
-    ax_m.plot(st.session_state.x_obs, dT_calc, 'm-', lw=1.8, label='2.5D Calculated (T)')
+    magnetic_plot_label = (
+        "Finite Strike calculated dT"
+        if finite_strike_gravity else "Infinite Strike calculated dT"
+    )
+    ax_m.plot(st.session_state.x_obs, dT_calc, 'm-', lw=1.8, label=magnetic_plot_label)
     ax_m.set_xlabel("Distance (m)")
     ax_m.set_ylabel("Magnetics (nT)")
     ax_m.grid(True, linestyle='--', alpha=0.6)
@@ -322,6 +391,20 @@ csv_df = pd.DataFrame({
 csv_data = csv_df.to_csv(index=False).encode('utf-8')
 col_exp1.download_button("💾 Export Calculated Results (CSV)", data=csv_data, file_name="KuffGravMag_Results.csv",
                          mime="text/csv")
+
+project_observations = {
+    "x": st.session_state.x_obs,
+    "z": st.session_state.z_obs,
+    "gravity": st.session_state.obs_gz,
+    "magnetic": st.session_state.obs_dT,
+}
+project_fields = {"F": spin_F, "Inc": spin_Inc, "Dec": spin_Dec, "Alpha": spin_alpha}
+project_json = json.dumps(project_to_dict(st.session_state.bodies, project_fields,
+                                         project_observations), indent=2, allow_nan=False)
+st.sidebar.download_button(
+    "Save KuffGravMag Project (JSON)", data=project_json,
+    file_name="KuffGravMag_Project.json", mime="application/json",
+)
 
 # Fixed PDF Generation Workflow
 if col_exp2.button("📄 Prepare Executive PDF Report"):
@@ -356,7 +439,7 @@ if col_exp2.button("📄 Prepare Executive PDF Report"):
             plt.close(report_fig)
 
             # Generate PDF via engine
-            generate_pdf_report(temp_pdf_path, temp_fig_path, st.session_state.bodies, {'F': spin_F, 'Inc': spin_Inc})
+            generate_pdf_report(temp_pdf_path, temp_fig_path, st.session_state.bodies, project_fields)
 
             # Save path to session state to keep download button alive
             st.session_state.pdf_ready_path = temp_pdf_path

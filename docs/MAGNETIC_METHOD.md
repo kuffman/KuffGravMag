@@ -4,7 +4,7 @@
 
 This note documents the corrected uniform-magnetization magnetic kernel for a polygonal cross-section that is invariant along strike. It returns the profile-horizontal component `dX`, the positive-down vertical component `dZ`, and the first-order total-field anomaly `dT`, all in nT. The magnetic kernel is independent of the gravity density contrast.
 
-The validated calculation is the infinite-strike 2D model. The existing finite-strike midpoint multiplier is retained as an approximation and is not validated by these tests. This milestone does not change the inversion engine, add demagnetization, or validate field-data processing.
+The infinite-strike 2D model remains available as an explicit Infinite Strike mode. KGM-M3 adds a finite polygonal-prism model with closed-form face integrals and full `(dX, dY, dZ, dT)` output. Its derivation and finite-strike validation are documented in [FINITE_STRIKE_METHOD.md](FINITE_STRIKE_METHOD.md). This milestone does not change the inversion engine, add demagnetization, or validate field-data processing.
 
 ## Coordinates, angles, and units
 
@@ -123,4 +123,4 @@ The 17-case magnetic suite was run against the reviewed pre-fix kernel before im
 
 ## Application limitations
 
-The current desktop and web interfaces still pass `D_f = 0` and `alpha = 0` to the magnetic model; the remanent declination parameter is also not exposed as an editable control. The engine now accepts these values and has nonzero-angle regression coverage, but users cannot yet configure the full orientation model through the interface. Finite-strike magnetic outputs still apply the old per-edge midpoint approximation. The gravity interface separately labels finite-strike gravity as approximate and the 2D infinite-strike reference as benchmarked.
+The desktop and web interfaces expose field intensity, inclination, declination, profile azimuth, remanent intensity, remanent inclination, and remanent declination. The JSON project format preserves those settings together with strike mode and bounds. Finite-strike magnetics assumes uniform magnetization and no self-demagnetization; its exact face-integral model and numerical limits are described in [FINITE_STRIKE_METHOD.md](FINITE_STRIKE_METHOD.md). The inversion engine remains unchanged and continues to consume the legacy `(dX, dZ, dT)` wrapper.

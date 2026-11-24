@@ -1,6 +1,6 @@
 # KuffGravMag
 
-KuffGravMag is a desktop and web workbench for 2D gravity and magnetic profile modelling. The infinite-strike gravity and magnetic kernels have analytical and independent numerical regression coverage. Finite-strike gravity and magnetics remain approximate, and the inversion engine remains outside the validated scope.
+KuffGravMag is a desktop and web workbench for gravity and magnetic profile modelling. Infinite Strike kernels use validated 2D calculations; Finite Strike mode evaluates the actual extruded 3D polygonal prism with closed-form face integrals. The inversion engine remains outside the validated scope.
 
 ## Reproducible Python setup
 
@@ -36,10 +36,10 @@ To install every group in one environment, use `uv sync --locked --all-groups`. 
 uv run --locked python -m pytest -q
 ```
 
-The gravity suite covers the positive-down analytical rectangle, an independent triangle area integral, winding invariance, zero and negative density, symmetry, superposition, depth and observation elevation, boundary observations, repeated vertices, and malformed inputs. The magnetic suite covers analytical rectangle components, an independent triangle dipole-area integral, field-angle projection, winding, symmetry, superposition, susceptibility scaling, zero magnetization, and malformed geometry. See [the validation record](docs/BASELINE_AND_VALIDATION.md), [the gravity method note](docs/SCIENTIFIC_METHODS.md), and [the magnetic method note](docs/MAGNETIC_METHOD.md).
+The scientific suite covers infinite-strike gravity and magnetic references, finite-strike rectangular-prism formulas, independent 3D volume integration, all magnetic components, field-angle projection, winding, symmetry, superposition, susceptibility scaling, strike-mode compatibility, and project round-tripping. See [the validation record](docs/BASELINE_AND_VALIDATION.md), [the gravity method note](docs/SCIENTIFIC_METHODS.md), [the magnetic method note](docs/MAGNETIC_METHOD.md), and [the finite-prism method note](docs/FINITE_STRIKE_METHOD.md).
 
 ## Scope and limitations
 
-The desktop, web, and PDF outputs identify gravity as either 2D infinite-strike (checked against analytical and independent numerical benchmarks) or approximate finite-strike. Finite-strike gravity still uses the previous midpoint multiplier, which is not a validated end correction. The magnetic kernel uses a winding-independent boundary-charge integral for the infinite-strike 2D case; its equations, conventions, numerical benchmarks, and interface limitations are documented in [docs/MAGNETIC_METHOD.md](docs/MAGNETIC_METHOD.md). Finite-strike magnetics remain approximate, and inversion behavior remains follow-up work.
+The desktop, web, and PDF outputs distinguish benchmarked Infinite Strike 2D kernels from validated Finite Strike prism integrals. The interfaces expose field intensity, inclination, declination, profile azimuth, remanent orientation, strike mode, and strike bounds. JSON projects preserve the model and observations; PDF reports include the field settings, body properties, strike mode, bounds, and vertices. Finite magnetics assumes uniform magnetization and no self-demagnetization. Inversion behavior remains follow-up work.
 
 GitHub Actions runs the locked scientific regression suite on pushes and pull requests. The existing Windows packaging workflow remains separate.

@@ -13,10 +13,11 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from scipy.interpolate import griddata
 
-from engine.forward import Body2D, PotentialField2D, is_infinite_strike_reference
+from engine.forward import Body2D, PotentialField2D
 from engine.report import generate_pdf_report
 from engine.grid import extract_profile_from_xyz
 from engine.inversion import invert_body_parameters
+from engine.project import load_project as read_project, save_project as write_project
 
 COLOR_OPTIONS = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown']
 
@@ -133,11 +134,29 @@ class MainWindow(QMainWindow):
         self.spin_Inc.valueChanged.connect(self.on_param_changed)
         global_layout.addRow("Field Inclination:", self.spin_Inc)
 
+        self.spin_Dec = QDoubleSpinBox()
+        self.spin_Dec.setRange(-180, 180)
+        self.spin_Dec.setValue(0)
+        self.spin_Dec.setSuffix(" deg")
+        self.spin_Dec.valueChanged.connect(self.on_param_changed)
+        global_layout.addRow("Field Declination:", self.spin_Dec)
+
+        self.spin_alpha = QDoubleSpinBox()
+        self.spin_alpha.setRange(-180, 180)
+        self.spin_alpha.setValue(0)
+        self.spin_alpha.setSuffix(" deg")
+        self.spin_alpha.valueChanged.connect(self.on_param_changed)
+        global_layout.addRow("Profile Azimuth:", self.spin_alpha)
+
         left_panel.addWidget(global_group)
 
         self.gravity_status_label = QLabel()
         self.gravity_status_label.setWordWrap(True)
         left_panel.addWidget(self.gravity_status_label)
+
+        self.magnetic_status_label = QLabel()
+        self.magnetic_status_label.setWordWrap(True)
+        left_panel.addWidget(self.magnetic_status_label)
 
         list_group = QGroupBox("Subsurface Bodies (2.5D)")
         list_layout = QVBoxLayout(list_group)
@@ -190,15 +209,28 @@ class MainWindow(QMainWindow):
         self.spin_Ir.valueChanged.connect(self.update_active_body_props)
         props_layout.addRow("Remanent Inc (Ir):", self.spin_Ir)
 
+        self.spin_Dr = QDoubleSpinBox()
+        self.spin_Dr.setRange(-180, 180)
+        self.spin_Dr.setValue(0.0)
+        self.spin_Dr.setSuffix(" deg")
+        self.spin_Dr.valueChanged.connect(self.update_active_body_props)
+        props_layout.addRow("Remanent Dec (Dr):", self.spin_Dr)
+
+        self.combo_strike_mode = QComboBox()
+        self.combo_strike_mode.addItem("Infinite Strike", "infinite")
+        self.combo_strike_mode.addItem("Finite Strike", "finite")
+        self.combo_strike_mode.currentIndexChanged.connect(self.update_active_body_props)
+        props_layout.addRow("Strike Model:", self.combo_strike_mode)
+
         self.spin_ymin = QDoubleSpinBox()
-        self.spin_ymin.setRange(-10000, 0)
+        self.spin_ymin.setRange(-1.0e7, 1.0e7)
         self.spin_ymin.setValue(-500)
         self.spin_ymin.setSuffix(" m")
         self.spin_ymin.valueChanged.connect(self.update_active_body_props)
         props_layout.addRow("Strike Y-Min:", self.spin_ymin)
 
         self.spin_ymax = QDoubleSpinBox()
-        self.spin_ymax.setRange(0, 10000)
+        self.spin_ymax.setRange(-1.0e7, 1.0e7)
         self.spin_ymax.setValue(500)
         self.spin_ymax.setSuffix(" m")
         self.spin_ymax.valueChanged.connect(self.update_active_body_props)
@@ -251,6 +283,16 @@ class MainWindow(QMainWindow):
     def create_menu_bar(self):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("File")
+
+        save_project_action = QAction("Save Project…", self)
+        save_project_action.triggered.connect(self.save_project)
+        file_menu.addAction(save_project_action)
+
+        load_project_action = QAction("Load Project…", self)
+        load_project_action.triggered.connect(self.load_project)
+        file_menu.addAction(load_project_action)
+
+        file_menu.addSeparator()
 
         import_grid_action = QAction("Import 3D Map & Slice Profile (XYZ)", self)
         import_grid_action.triggered.connect(self.import_3d_grid_csv)
@@ -396,8 +438,10 @@ class MainWindow(QMainWindow):
         if not file_path: return
         engine = PotentialField2D(self.bodies)
         gz_calc = engine.calculate_gravity(self.x_obs, self.z_obs)
-        _, _, dT_calc = engine.calculate_magnetics(self.x_obs, self.z_obs, self.spin_F.value(), self.spin_Inc.value(),
-                                                   0.0, 0.0)
+        _, _, dT_calc = engine.calculate_magnetics(
+            self.x_obs, self.z_obs, self.spin_F.value(), self.spin_Inc.value(),
+            self.spin_Dec.value(), self.spin_alpha.value(),
+        )
         try:
             with open(file_path, 'w', newline='') as f:
                 writer = csv.writer(f)
@@ -420,8 +464,7 @@ class MainWindow(QMainWindow):
             self.figure.savefig(temp_fig, dpi=300, bbox_inches='tight')
 
             # 3. Generate the actual PDF
-            generate_pdf_report(file_path, temp_fig, self.bodies,
-                                {'F': self.spin_F.value(), 'Inc': self.spin_Inc.value()})
+            generate_pdf_report(file_path, temp_fig, self.bodies, self.field_params())
 
             # 4. Clean up the temporary image
             if os.path.exists(temp_fig):
@@ -431,6 +474,68 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not build PDF:\n{str(e)}")
+
+    def field_params(self):
+        return {
+            "F": self.spin_F.value(),
+            "Inc": self.spin_Inc.value(),
+            "Dec": self.spin_Dec.value(),
+            "Alpha": self.spin_alpha.value(),
+        }
+
+    def save_project(self):
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Save KuffGravMag Project", "KuffGravMag_Project.json",
+            "KuffGravMag project (*.json)",
+        )
+        if not file_path:
+            return
+        observations = {
+            "x": self.x_obs,
+            "z": self.z_obs,
+            "gravity": self.obs_gz,
+            "magnetic": self.obs_dT,
+        }
+        try:
+            write_project(file_path, self.bodies, self.field_params(), observations)
+            QMessageBox.information(self, "Project Saved", f"Saved project to {file_path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Project Save Error", f"Could not save project:\n{exc}")
+
+    def load_project(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load KuffGravMag Project", "KuffGravMag_Project.json",
+            "KuffGravMag project (*.json)",
+        )
+        if not file_path:
+            return
+        try:
+            project = read_project(file_path)
+            if not project["bodies"]:
+                raise ValueError("Project has no bodies")
+            self.bodies = project["bodies"]
+            fields = project["field_params"]
+            for widget, key, default in (
+                (self.spin_F, "F", 48_000.0),
+                (self.spin_Inc, "Inc", 55.0),
+                (self.spin_Dec, "Dec", 0.0),
+                (self.spin_alpha, "Alpha", 0.0),
+            ):
+                widget.blockSignals(True)
+                widget.setValue(fields.get(key, default))
+                widget.blockSignals(False)
+            observations = project["observations"]
+            if observations["x"] is not None and observations["z"] is not None:
+                self.x_obs = observations["x"]
+                self.z_obs = observations["z"]
+            self.obs_gz = observations["gravity"]
+            self.obs_dT = observations["magnetic"]
+            self.active_body_idx = 0
+            self.refresh_body_list()
+            self.recalculate_and_plot()
+            QMessageBox.information(self, "Project Loaded", f"Loaded project from {file_path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Project Load Error", f"Could not load project:\n{exc}")
 
     def refresh_body_list(self):
         self.body_list.blockSignals(True)
@@ -451,11 +556,26 @@ class MainWindow(QMainWindow):
         if not self.bodies or self.active_body_idx >= len(self.bodies): return
         body = self.bodies[self.active_body_idx]
         self.body_props_group.setTitle(f"Properties: {body.name}")
-        for spin, val in [(self.spin_rho, body.density), (self.spin_k, body.k_succ), (self.spin_Jr, body.J_r),
-                          (self.spin_Ir, body.I_r), (self.spin_ymin, body.y_min), (self.spin_ymax, body.y_max)]:
+        for spin, val in [(self.spin_rho, body.density), (self.spin_k, body.k_succ),
+                          (self.spin_Jr, body.J_r), (self.spin_Ir, body.I_r),
+                          (self.spin_Dr, body.D_r)]:
             spin.blockSignals(True)
             spin.setValue(val)
             spin.blockSignals(False)
+        mode_index = self.combo_strike_mode.findData(body.strike_mode)
+        self.combo_strike_mode.blockSignals(True)
+        self.combo_strike_mode.setCurrentIndex(max(0, mode_index))
+        self.combo_strike_mode.blockSignals(False)
+        for spin, val, fallback in (
+            (self.spin_ymin, body.y_min, -500.0),
+            (self.spin_ymax, body.y_max, 500.0),
+        ):
+            spin.blockSignals(True)
+            spin.setValue(val if np.isfinite(val) else fallback)
+            spin.blockSignals(False)
+        finite_strike = body.strike_mode == "finite"
+        self.spin_ymin.setEnabled(finite_strike)
+        self.spin_ymax.setEnabled(finite_strike)
         self.combo_color.blockSignals(True)
         c_idx = COLOR_OPTIONS.index(body.color) if body.color in COLOR_OPTIONS else 0
         self.combo_color.setCurrentIndex(c_idx)
@@ -468,8 +588,11 @@ class MainWindow(QMainWindow):
         body.k_succ = self.spin_k.value()
         body.J_r = self.spin_Jr.value()
         body.I_r = self.spin_Ir.value()
-        body.y_min = self.spin_ymin.value()
-        body.y_max = self.spin_ymax.value()
+        body.D_r = self.spin_Dr.value()
+        body.strike_mode = self.combo_strike_mode.currentData()
+        if body.strike_mode == "finite":
+            body.y_min = self.spin_ymin.value()
+            body.y_max = self.spin_ymax.value()
         body.color = self.combo_color.currentText()
         self.recalculate_and_plot()
 
@@ -497,8 +620,10 @@ class MainWindow(QMainWindow):
     def recalculate_and_plot(self):
         engine = PotentialField2D(self.bodies)
         gz_total = engine.calculate_gravity(self.x_obs, self.z_obs)
-        _, _, dT_total = engine.calculate_magnetics(self.x_obs, self.z_obs, self.spin_F.value(), self.spin_Inc.value(),
-                                                    0.0, 0.0)
+        _, _, _, dT_total = engine.calculate_magnetics_components(
+            self.x_obs, self.z_obs, self.spin_F.value(), self.spin_Inc.value(),
+            self.spin_Dec.value(), self.spin_alpha.value(),
+        )
         self.plot_results(gz_total, dT_total)
 
     def plot_results(self, gz, dT):
@@ -506,24 +631,43 @@ class MainWindow(QMainWindow):
         self.ax_mag.clear()
         self.ax_body.clear()
 
-        uses_finite_strike = any(
-            not is_infinite_strike_reference(body.y_min, body.y_max)
-            for body in self.bodies
-        )
+        uses_finite_strike = any(body.strike_mode == "finite" for body in self.bodies)
+        uses_infinite_strike = any(body.strike_mode == "infinite" for body in self.bodies)
         if uses_finite_strike:
-            gravity_label = "Approximate finite-strike gravity"
-            self.gravity_status_label.setText(
-                "Gravity: finite-strike results use an approximate midpoint correction; "
-                "they are not validated."
+            gravity_label = (
+                "Mixed Infinite/Finite Strike gravity"
+                if uses_infinite_strike else "Finite Strike gravity (validated prism model)"
             )
-            self.gravity_status_label.setStyleSheet("color: #9b2c2c;")
+            finite_text = (
+                "Finite Strike gravity uses closed-form polygonal-prism face integrals "
+                "validated against rectangular-prism and independent volume references."
+            )
+            if uses_infinite_strike:
+                finite_text += " Infinite Strike bodies use the benchmarked positive-down 2D kernel."
+            self.gravity_status_label.setText("Gravity: " + finite_text)
+            self.gravity_status_label.setStyleSheet("color: #276749;")
         else:
-            gravity_label = "2D infinite-strike gravity (benchmarked)"
+            gravity_label = "Infinite Strike gravity (benchmarked 2D model)"
             self.gravity_status_label.setText(
-                "Gravity: infinite-strike 2D kernel, checked against analytical and "
-                "independent numerical benchmarks."
+                "Gravity: Infinite Strike mode uses the benchmarked positive-down 2D kernel."
             )
             self.gravity_status_label.setStyleSheet("color: #276749;")
+
+        if uses_finite_strike and uses_infinite_strike:
+            self.magnetic_status_label.setText(
+                "Magnetics: mixed Infinite and Finite Strike bodies; finite bodies use "
+                "closed-form 3D prism face integrals; total-field output is linearized."
+            )
+        elif uses_finite_strike:
+            self.magnetic_status_label.setText(
+                "Magnetics: Finite Strike mode uses closed-form 3D prism face integrals; "
+                "uniform magnetization, no demagnetization, linearized total field."
+            )
+        else:
+            self.magnetic_status_label.setText(
+                "Magnetics: Infinite Strike mode uses the benchmarked 2D boundary-charge kernel."
+            )
+        self.magnetic_status_label.setStyleSheet("color: #276749;")
 
         if self.obs_gz is not None:
             self.ax_grav.plot(self.x_obs, self.obs_gz, 'r.', label='Observed (g)')
@@ -534,7 +678,11 @@ class MainWindow(QMainWindow):
 
         if self.obs_dT is not None:
             self.ax_mag.plot(self.x_obs, self.obs_dT, 'r.', label='Observed (T)')
-        self.ax_mag.plot(self.x_obs, dT, 'm-', lw=1.8, label='2.5D Calculated (T)')
+        magnetic_label = (
+            "Finite Strike calculated dT"
+            if uses_finite_strike else "Infinite Strike calculated dT"
+        )
+        self.ax_mag.plot(self.x_obs, dT, 'm-', lw=1.8, label=magnetic_label)
         self.ax_mag.set_ylabel("Magnetics (nT)")
         self.ax_mag.grid(True)
         self.ax_mag.legend(loc='upper right')
@@ -545,7 +693,8 @@ class MainWindow(QMainWindow):
         for idx, body in enumerate(self.bodies):
             is_active = (idx == self.active_body_idx)
             self.ax_body.plot(body.x, body.z, '-o', color=body.color, lw=2.5 if is_active else 1.0,
-                              label=f"{body.name} (Y:[{body.y_min:.0f},{body.y_max:.0f}])", markersize=6)
+                              label=f"{body.name} ({body.strike_mode}: Y=[{body.y_min:.0f},{body.y_max:.0f}])",
+                              markersize=6)
             self.ax_body.fill(body.x, body.z, color=body.color, alpha=0.7 if is_active else 0.3)
 
         self.ax_body.invert_yaxis()
