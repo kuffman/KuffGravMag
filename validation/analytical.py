@@ -132,8 +132,8 @@ def rectangular_prism_gravity_gz_mgal(
 
     The corner primitive is evaluated directly from the closed form. Bounds are
     ordered source coordinates in metres, density is kg/m³, and the returned
-    downward acceleration is mGal. Observation points on prism edges/vertices
-    are excluded because some derivatives have side-specific limits there.
+    downward acceleration is mGal. Gravity observations on or inside a prism
+    are supported, with finite limiting values at faces, edges, and vertices.
     """
     xb = _ordered_bounds(x_bounds, "x_bounds")
     yb = _ordered_bounds(y_bounds, "y_bounds")
@@ -149,7 +149,9 @@ def rectangular_prism_gravity_gz_mgal(
     def corner_primitive(x: float, y: float, z: float) -> float:
         radius = math.sqrt(x * x + y * y + z * z)
         if radius == 0.0:
-            raise ValueError("The rectangular-prism corner primitive is singular at a vertex")
+            # Each coordinate-log product tends to zero as the corner is
+            # approached; the gravity component itself remains finite.
+            return 0.0
 
         def log_coordinate_sum(coordinate: float, other_a: float, other_b: float) -> float:
             if coordinate < 0.0:
@@ -157,13 +159,22 @@ def rectangular_prism_gravity_gz_mgal(
                 # for observations close to a prism face or edge.
                 numerator = other_a * other_a + other_b * other_b
                 if numerator == 0.0:
-                    return -math.inf
+                    # The leading x or y multiplier is zero in this limit.
+                    return 0.0
                 return math.log(numerator) - math.log(radius - coordinate)
-            return math.log(coordinate + radius)
+            positive_sum = coordinate + radius
+            return math.log(positive_sum) if positive_sum > 0.0 else 0.0
 
         x_log = 0.0 if x == 0.0 else x * log_coordinate_sum(y, x, z)
         y_log = 0.0 if y == 0.0 else y * log_coordinate_sum(x, y, z)
-        return x_log + y_log - z * math.atan2(x * y, z * radius)
+        atan_numerator = x * y
+        atan_denominator = z * radius
+        angle = math.atan2(atan_numerator, atan_denominator)
+        if atan_denominator < 0.0:
+            # The Nagy formula uses the principal atan ratio branch. Convert
+            # atan2's quadrant II/III result back to that (-pi/2, pi/2) branch.
+            angle -= math.copysign(math.pi, atan_numerator)
+        return x_log + y_log - z * angle
 
     corner_sum = 0.0
     for ix, x_source in enumerate(xb):

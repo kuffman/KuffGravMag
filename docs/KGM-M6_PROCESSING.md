@@ -144,6 +144,27 @@ described as a complete Bouguer anomaly by itself. Tests compare the prism sum
 with a separate closed-form rectangular-prism calculation and the pinned
 Harmonica 0.7.0 `prism_gravity` implementation.
 
+For a prism corner, the vertical-field primitive is
+`F(x,y,z) = x ln(y + r) + y ln(x + r) - z atan(x y / (z r))`, where
+`r = sqrt(x² + y² + z²)`, the vertical coordinate is positive down, and `atan`
+uses its principal `(-π/2, π/2)` branch. The cell response is the alternating
+eight-corner sum, multiplied by `-G` and the signed density contrast; the final
+unit conversion is to mGal. Using the general `atan2` quadrant without folding
+it back to the principal branch adds an erroneous `π z` contribution for
+stations below or inside a prism. The implementation rationalizes negative
+log arguments near faces and uses the finite zero limit for a coincident
+corner. Gravity remains finite at prism faces, edges, and vertices.
+
+Regressions compare above, below, and inside observations with independent
+Newtonian volume integration and Harmonica. Additional checks cover coordinate
+axes, exact and near faces/vertices, horizontal symmetry, positive and negative
+density contrasts, and masked DEM cells. The independent finite-strike prism
+engine is also checked below and inside the prism; it uses a separate
+face-integral formulation. A terrain station inside the modeled mass is
+mathematically supported, but the output remains only the finite DEM-domain
+vertical attraction and does not imply a complete terrain or Bouguer
+reduction.
+
 ## IGRF-14 main-field correction
 
 The pinned IGRF-14 coefficient file is bundled with the engine, so results are

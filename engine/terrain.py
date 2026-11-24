@@ -87,18 +87,37 @@ def _corner_primitive(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> np.ndarray
     def log_sum(coordinate: np.ndarray, other_a: np.ndarray, other_b: np.ndarray) -> np.ndarray:
         positive = coordinate >= 0.0
         numerator = other_a * other_a + other_b * other_b
-        result = np.empty_like(coordinate)
-        result[positive] = np.log(coordinate[positive] + radius[positive])
+        result = np.zeros_like(coordinate)
+        # At an exact corner, coordinate + radius can be zero. The associated
+        # leading x or y multiplier is also zero, so its limiting product is 0.
+        positive_argument = coordinate + radius
+        positive_valid = positive & (positive_argument > 0.0)
+        result[positive_valid] = np.log(positive_argument[positive_valid])
         negative = ~positive
-        if np.any(negative):
-            if np.any(numerator[negative] == 0.0):
-                raise ValueError("A terrain observation coincides with a prism vertex; shift the grid or station slightly")
-            result[negative] = np.log(numerator[negative]) - np.log(radius[negative] - coordinate[negative])
+        negative_valid = negative & (numerator > 0.0)
+        # Rationalize r + coordinate to avoid cancellation close to a face or
+        # edge. When numerator is zero, the leading x or y multiplier is zero
+        # and the product has the finite zero limit used above.
+        result[negative_valid] = (
+            np.log(numerator[negative_valid])
+            - np.log(radius[negative_valid] - coordinate[negative_valid])
+        )
         return result
 
     x_term = np.where(x == 0.0, 0.0, x * log_sum(y, x, z))
     y_term = np.where(y == 0.0, 0.0, y * log_sum(x, y, z))
-    atan = np.arctan2(x * y, z * radius)
+    # Nagy's vertical-field primitive uses the principal atan(x*y/(z*r))
+    # branch. atan2 adds or subtracts pi when z*r < 0, creating a spurious
+    # finite term that is especially visible below and inside the prism.
+    atan_numerator = x * y
+    atan_denominator = z * radius
+    atan = np.arctan2(atan_numerator, atan_denominator)
+    negative_denominator = atan_denominator < 0.0
+    atan = np.where(
+        negative_denominator,
+        atan - np.copysign(np.pi, atan_numerator),
+        atan,
+    )
     return x_term + y_term - z * atan
 
 
