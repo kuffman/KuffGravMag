@@ -220,46 +220,85 @@ if uploaded_file is not None:
 st.sidebar.markdown("---")
 st.sidebar.header("⚙️ Optimization & Inversion")
 
+with st.sidebar.expander("Inversion controls", expanded=False):
+    inversion_sigma = st.number_input(
+        "Observation standard deviation (mGal / nT)",
+        min_value=1e-6,
+        value=1.0,
+        format="%.6g",
+    )
+    inversion_regularization = st.number_input(
+        "Regularization lambda",
+        min_value=0.0,
+        value=0.0,
+        format="%.6g",
+    )
+    fit_inversion_geometry = st.checkbox("Fit constrained depth shift and scale", value=False)
+
+
+def _show_inversion_result(label, result):
+    if not result.success:
+        st.sidebar.error(f"{label} inversion stopped ({result.status}): {result.message}")
+        st.sidebar.caption("The starting model was preserved.")
+        return
+
+    if result.identifiable:
+        st.sidebar.success(f"{label} inversion converged.")
+    else:
+        st.sidebar.warning(f"{label} fit converged, but the data do not identify a unique model.")
+    st.sidebar.caption(
+        f"RMS {result.initial_rms:.5g} → {result.final_rms:.5g}; "
+        f"weighted RMS {result.weighted_rms:.5g}; "
+        f"{result.function_evaluations} evaluations; "
+        f"rank {result.numerical_rank}/{result.parameter_count}."
+    )
+    if result.standard_errors:
+        uncertainty = ", ".join(
+            f"{name} ± {value:.4g}" for name, value in result.standard_errors.items()
+        )
+        st.sidebar.caption(f"Approximate local 1σ errors: {uncertainty}")
+    elif result.message:
+        st.sidebar.caption(result.message)
+
 if st.sidebar.button("🚀 Run Gravity Inversion"):
     if st.session_state.obs_gz is None:
         st.sidebar.error("Import observed gravity data first!")
     else:
-        field_params = {'F': spin_F, 'Inc': spin_Inc}
+        field_params = {"F": spin_F, "Inc": spin_Inc, "Dec": spin_Dec, "alpha": spin_alpha}
         with st.spinner(f"Inverting gravity for {active_body.name}..."):
-            # Try to pass all_bodies if backend supports it, else fallback to standard args
-            try:
-                success = invert_body_parameters(active_body, st.session_state.x_obs, st.session_state.z_obs,
-                                                 st.session_state.obs_gz, all_bodies=st.session_state.bodies,
-                                                 field_type='gravity', field_params=field_params)
-            except TypeError:
-                success = invert_body_parameters(active_body, st.session_state.x_obs, st.session_state.z_obs,
-                                                 st.session_state.obs_gz, field_type='gravity',
-                                                 field_params=field_params)
-
-            if success:
-                st.sidebar.success("Gravity inversion converged!")
-            else:
-                st.sidebar.error("Inversion failed to converge.")
+            result = invert_body_parameters(
+                active_body,
+                st.session_state.x_obs,
+                st.session_state.z_obs,
+                st.session_state.obs_gz,
+                all_bodies=st.session_state.bodies,
+                field_type="gravity",
+                field_params=field_params,
+                observation_sigma=inversion_sigma,
+                regularization=inversion_regularization,
+                fit_geometry=fit_inversion_geometry,
+            )
+        _show_inversion_result("Gravity", result)
 
 if st.sidebar.button("🚀 Run Magnetic Inversion"):
     if st.session_state.obs_dT is None:
         st.sidebar.error("Import observed magnetic data first!")
     else:
-        field_params = {'F': spin_F, 'Inc': spin_Inc}
+        field_params = {"F": spin_F, "Inc": spin_Inc, "Dec": spin_Dec, "alpha": spin_alpha}
         with st.spinner(f"Inverting magnetics for {active_body.name}..."):
-            try:
-                success = invert_body_parameters(active_body, st.session_state.x_obs, st.session_state.z_obs,
-                                                 st.session_state.obs_dT, all_bodies=st.session_state.bodies,
-                                                 field_type='magnetics', field_params=field_params)
-            except TypeError:
-                success = invert_body_parameters(active_body, st.session_state.x_obs, st.session_state.z_obs,
-                                                 st.session_state.obs_dT, field_type='magnetics',
-                                                 field_params=field_params)
-
-            if success:
-                st.sidebar.success("Magnetic inversion converged!")
-            else:
-                st.sidebar.error("Inversion failed to converge.")
+            result = invert_body_parameters(
+                active_body,
+                st.session_state.x_obs,
+                st.session_state.z_obs,
+                st.session_state.obs_dT,
+                all_bodies=st.session_state.bodies,
+                field_type="magnetics",
+                field_params=field_params,
+                observation_sigma=inversion_sigma,
+                regularization=inversion_regularization,
+                fit_geometry=fit_inversion_geometry,
+            )
+        _show_inversion_result("Magnetic", result)
 
 # --- Main Layout Execution (Tabs Fix) ---
 col_left, col_right = st.columns([1, 1.2])
