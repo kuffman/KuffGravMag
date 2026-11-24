@@ -285,6 +285,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "numpy" },
+    { name = "scipy" },
 ]
 
 [package.dev-dependencies]
@@ -309,7 +310,10 @@ web = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "numpy", specifier = ">=1.26,<3" }]
+requires-dist = [
+    { name = "numpy", specifier = ">=1.26,<3" },
+    { name = "scipy", specifier = ">=1.11,<2" },
+]
 
 [package.metadata.requires-dev]
 build = [{ name = "pyinstaller", specifier = ">=6.6,<7" }]
