@@ -12,6 +12,7 @@ from validation.analytical import (
 
 
 _DENSITY = 2670.0
+_G = 6.67430e-11
 _CRS = "local east/north metres"
 _DATUM = "local vertical datum"
 
@@ -61,6 +62,25 @@ def _direct_volume_gravity(
     return gravity
 
 
+def _vertical_reduced_volume_gravity(
+    station_up: tuple[float, float, float], *, order: int = 64
+) -> float:
+    """Newtonian prism volume integral, with the vertical axis integrated exactly."""
+    nodes, weights = np.polynomial.legendre.leggauss(order)
+    x = 5.0 * nodes
+    y = 5.0 * nodes
+    xx, yy = np.meshgrid(x, y, indexing="ij")
+    area_weights = 25.0 * weights[:, None] * weights[None, :]
+    horizontal_squared = (xx - station_up[0]) ** 2 + (yy - station_up[1]) ** 2
+    vertical_top = station_up[2] - 20.0
+    vertical_bottom = station_up[2] - 10.0
+    integrand = (
+        1.0 / np.sqrt(horizontal_squared + vertical_top**2)
+        - 1.0 / np.sqrt(horizontal_squared + vertical_bottom**2)
+    )
+    return float(_G * _DENSITY * 1e5 * np.sum(area_weights * integrand))
+
+
 def test_terrain_prism_matches_newtonian_volume_integral_above_below_and_inside():
     stations = np.array([
         [0.0, 0.0, 30.0],  # above the prism
@@ -94,6 +114,23 @@ def test_terrain_prism_matches_harmonica_above_below_and_inside():
     )
 
     np.testing.assert_allclose(actual, expected, rtol=2e-10, atol=2e-12)
+
+
+def test_off_axis_interior_station_matches_independent_volume_and_harmonica():
+    harmonica = pytest.importorskip("harmonica")
+    station = np.array([[1.25, -0.75, 16.0]])
+    actual = _terrain(_one_cell_dem(), station)[0]
+    expected_volume = _vertical_reduced_volume_gravity(tuple(station[0]))
+    expected_harmonica = harmonica.prism_gravity(
+        (station[:, 0], station[:, 1], station[:, 2]),
+        np.array([[-5.0, 5.0, -5.0, 5.0, 10.0, 20.0]]),
+        np.array([_DENSITY]),
+        field="g_z",
+        parallel=False,
+    )[0]
+
+    assert actual == pytest.approx(expected_volume, rel=2e-10, abs=2e-12)
+    assert actual == pytest.approx(expected_harmonica, rel=2e-10, abs=2e-12)
 
 
 def test_nagy_reference_principal_branch_and_corner_limits_match_harmonica():
