@@ -10,7 +10,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from streamlit.testing.v1 import AppTest
 
 from engine.forward import Body2D
+from engine.processing import apply_gravity_reductions
 from engine.report import generate_pdf_report
+from engine.survey import SurveyProfile
 
 
 def smoke_web():
@@ -20,6 +22,27 @@ def smoke_web():
         raise RuntimeError(f"Web app raised during its first render:\n{messages}")
     if not any("KuffGravMag" in str(item.value) for item in app.title):
         raise RuntimeError("The web app title did not render")
+
+    profile = SurveyProfile.from_csv(
+        b"""distance_m,elevation_m,gravity_mgal
+0,100,10
+100,110,11
+""",
+        metadata={
+            "coordinate_reference": "local profile coordinates",
+            "profile_azimuth_deg": 0.0,
+            "elevation_datum": "local survey benchmark",
+        },
+        source_name="smoke-profile.csv",
+    )
+    app.session_state["m6_profile"] = profile
+    app.session_state["m6_products"] = [
+        apply_gravity_reductions(profile, datum_elevation_m=100.0)
+    ]
+    app.run()
+    if app.exception:
+        messages = "\n".join(str(item.message) for item in app.exception)
+        raise RuntimeError(f"Web app raised while rendering processed survey data:\n{messages}")
 
 
 def smoke_pdf():

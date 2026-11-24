@@ -405,7 +405,7 @@ def _render_m6_processing_panel():
         chart_data = {"Raw channel": channel_values}
         for product in st.session_state.m6_products:
             for name, values in product.columns.items():
-                if product.units[name] == channel_units:
+                if product.units[name] == units:
                     chart_data[name] = values
         st.line_chart(pd.DataFrame(chart_data, index=profile.distance_m), height=240)
         matching_regular = [
