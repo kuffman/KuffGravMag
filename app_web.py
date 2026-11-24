@@ -7,7 +7,7 @@ import streamlit as st
 from scipy.interpolate import griddata
 
 # Core computational backend engine imports
-from engine.forward import Body2D, PotentialField2D
+from engine.forward import Body2D, PotentialField2D, is_infinite_strike_reference
 from engine.inversion import invert_body_parameters
 from engine.grid import extract_profile_from_xyz
 from engine.report import generate_pdf_report
@@ -86,6 +86,18 @@ with st.sidebar.expander(f"⚙️ Properties: {active_body.name}", expanded=True
 
     c_idx = COLOR_OPTIONS.index(active_body.color) if active_body.color in COLOR_OPTIONS else 0
     active_body.color = st.selectbox("Display Color", COLOR_OPTIONS, index=c_idx)
+
+if any(
+    not is_infinite_strike_reference(body.y_min, body.y_max)
+    for body in st.session_state.bodies
+):
+    st.sidebar.warning(
+        "Finite-strike gravity uses an approximate midpoint correction and is not validated."
+    )
+else:
+    st.sidebar.success(
+        "Infinite-strike 2D gravity is checked against analytical and numerical benchmarks."
+    )
 
 # Active Body Vertex Editor
 with st.sidebar.expander("📐 Edit Active Body Vertices", expanded=False):
@@ -258,6 +270,15 @@ with col_left:
 engine = PotentialField2D(st.session_state.bodies)
 gz_calc = engine.calculate_gravity(st.session_state.x_obs, st.session_state.z_obs)
 _, _, dT_calc = engine.calculate_magnetics(st.session_state.x_obs, st.session_state.z_obs, spin_F, spin_Inc, 0.0, 0.0)
+finite_strike_gravity = any(
+    not is_infinite_strike_reference(body.y_min, body.y_max)
+    for body in st.session_state.bodies
+)
+gravity_plot_label = (
+    "Approximate finite-strike gravity"
+    if finite_strike_gravity
+    else "2D infinite-strike gravity (benchmarked)"
+)
 
 # Right Column: Field Plots
 with col_right:
@@ -265,9 +286,13 @@ with col_right:
     fig_res, (ax_g, ax_m) = plt.subplots(2, 1, figsize=(6, 5.7), sharex=True)
 
     # Gravity Plot
+    if finite_strike_gravity:
+        st.warning(
+            "Finite-strike gravity is approximate: the midpoint correction is not validated."
+        )
     if st.session_state.obs_gz is not None:
         ax_g.plot(st.session_state.x_obs, st.session_state.obs_gz, 'r.', label='Observed (g)')
-    ax_g.plot(st.session_state.x_obs, gz_calc, 'b-', lw=1.8, label='2.5D Calculated (g)')
+    ax_g.plot(st.session_state.x_obs, gz_calc, 'b-', lw=1.8, label=gravity_plot_label)
     ax_g.set_ylabel("Gravity (mGal)")
     ax_g.grid(True, linestyle='--', alpha=0.6)
     ax_g.legend(loc='upper right')

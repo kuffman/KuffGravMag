@@ -13,7 +13,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from scipy.interpolate import griddata
 
-from engine.forward import Body2D, PotentialField2D
+from engine.forward import Body2D, PotentialField2D, is_infinite_strike_reference
 from engine.report import generate_pdf_report
 from engine.grid import extract_profile_from_xyz
 from engine.inversion import invert_body_parameters
@@ -134,6 +134,10 @@ class MainWindow(QMainWindow):
         global_layout.addRow("Field Inclination:", self.spin_Inc)
 
         left_panel.addWidget(global_group)
+
+        self.gravity_status_label = QLabel()
+        self.gravity_status_label.setWordWrap(True)
+        left_panel.addWidget(self.gravity_status_label)
 
         list_group = QGroupBox("Subsurface Bodies (2.5D)")
         list_layout = QVBoxLayout(list_group)
@@ -502,9 +506,28 @@ class MainWindow(QMainWindow):
         self.ax_mag.clear()
         self.ax_body.clear()
 
+        uses_finite_strike = any(
+            not is_infinite_strike_reference(body.y_min, body.y_max)
+            for body in self.bodies
+        )
+        if uses_finite_strike:
+            gravity_label = "Approximate finite-strike gravity"
+            self.gravity_status_label.setText(
+                "Gravity: finite-strike results use an approximate midpoint correction; "
+                "they are not validated."
+            )
+            self.gravity_status_label.setStyleSheet("color: #9b2c2c;")
+        else:
+            gravity_label = "2D infinite-strike gravity (benchmarked)"
+            self.gravity_status_label.setText(
+                "Gravity: infinite-strike 2D kernel, checked against analytical and "
+                "independent numerical benchmarks."
+            )
+            self.gravity_status_label.setStyleSheet("color: #276749;")
+
         if self.obs_gz is not None:
             self.ax_grav.plot(self.x_obs, self.obs_gz, 'r.', label='Observed (g)')
-        self.ax_grav.plot(self.x_obs, gz, 'b-', lw=1.8, label='2.5D Calculated (g)')
+        self.ax_grav.plot(self.x_obs, gz, 'b-', lw=1.8, label=gravity_label)
         self.ax_grav.set_ylabel("Gravity (mGal)")
         self.ax_grav.grid(True)
         self.ax_grav.legend(loc='upper right')
