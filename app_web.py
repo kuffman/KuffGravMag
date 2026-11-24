@@ -14,6 +14,15 @@ from engine.inversion import invert_body_parameters
 from engine.grid import extract_profile_from_xyz
 from engine.report import generate_pdf_report
 from engine.project import load_project as read_project, project_to_dict
+from engine.survey import SurveyProfile, BaseStationSeries, export_processing_bundle
+from engine.processing import (
+    apply_gravity_reductions,
+    apply_magnetic_diurnal_correction,
+    separate_polynomial_regional,
+    interpolate_profile,
+    RegularProfile,
+)
+from engine.spectral import transform_profile
 
 COLOR_OPTIONS = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown']
 
@@ -65,6 +74,10 @@ if project_upload is not None:
                 st.session_state.z_obs = observations["z"]
             st.session_state.obs_gz = observations["gravity"]
             st.session_state.obs_dT = observations["magnetic"]
+            st.session_state.m6_profile = project["survey_profile"]
+            st.session_state.m6_processing_steps = project["processing_steps"]
+            st.session_state.m6_products = []
+            st.session_state.m6_regular_profiles = []
             st.session_state.loaded_project_digest = project_digest
             st.rerun()
         except Exception as exc:
@@ -75,6 +88,16 @@ if 'x_obs' not in st.session_state:
     st.session_state.z_obs = np.zeros_like(st.session_state.x_obs)
     st.session_state.obs_gz = None
     st.session_state.obs_dT = None
+
+for key, default in (
+    ("m6_profile", None),
+    ("m6_base_station", None),
+    ("m6_products", []),
+    ("m6_regular_profiles", []),
+    ("m6_processing_steps", []),
+):
+    if key not in st.session_state:
+        st.session_state[key] = default
 
 st.title("🌐 KuffGravMag — 2.5D Mobile Workbench")
 
@@ -236,6 +259,173 @@ with st.sidebar.expander("Inversion controls", expanded=False):
     fit_inversion_geometry = st.checkbox("Fit constrained depth shift and scale", value=False)
 
 
+def _m6_processing_manifest(products, regular_profiles):
+    steps = [product.to_manifest() for product in products]
+    steps.extend({
+        "name": item.name,
+        "parameters": dict(item.parameters or {}),
+        "assumptions": list(item.assumptions),
+        "spacing_m": item.spacing_m,
+        "units": item.units,
+    } for item in regular_profiles)
+    return steps
+
+
+def _render_m6_processing_panel():
+    with st.sidebar.expander("🧭 Survey processing and provenance (M6)", expanded=False):
+        upload = st.file_uploader("Versioned survey profile CSV", type=["csv"], key="m6_survey_csv")
+        coordinate_reference = st.text_input("Coordinate reference", "local profile coordinates", key="m6_crs")
+        azimuth = st.number_input("Profile azimuth (degrees)", -180.0, 180.0, 0.0, key="m6_azimuth")
+        elevation_datum = st.text_input("Elevation datum", "local survey benchmark", key="m6_elevation_datum")
+        if st.button("Load versioned survey", key="m6_load_survey"):
+            try:
+                if upload is None:
+                    raise ValueError("Choose a profile CSV first.")
+                st.session_state.m6_profile = SurveyProfile.from_csv(
+                    upload.getvalue(),
+                    metadata={"coordinate_reference": coordinate_reference,
+                              "profile_azimuth_deg": azimuth, "elevation_datum": elevation_datum},
+                    source_name=upload.name,
+                )
+                st.session_state.m6_products = []
+                st.session_state.m6_regular_profiles = []
+                st.session_state.m6_processing_steps = []
+            except Exception as exc:
+                st.error(f"Could not load survey profile: {exc}")
+
+        profile = st.session_state.m6_profile
+        if profile is None:
+            st.caption("CSV columns: distance_m, elevation_m, gravity_mgal and/or magnetic_anomaly_nt.")
+            return
+        st.caption(
+            f"{profile.distance_m.size} stations · {profile.provenance['source_name']} · "
+            f"SHA-256 {profile.provenance['source_sha256'][:16]}…"
+        )
+        choices = {}
+        if profile.gravity_mgal is not None:
+            choices["Gravity (mGal)"] = ("gravity", profile.gravity_mgal, "mGal")
+        if profile.magnetic_anomaly_nt is not None:
+            choices["Magnetic anomaly (nT)"] = (
+                "magnetic", profile.magnetic_anomaly_nt, "nT total-field anomaly"
+            )
+        label = st.selectbox("Processing channel", list(choices), key="m6_channel_selection")
+        channel_name, channel_values, units = choices[label]
+        datum = st.number_input("Gravity reduction datum (m)", value=0.0, key="m6_datum")
+        include_bouguer = st.checkbox("Apply infinite Bouguer slab", key="m6_include_bouguer")
+        density = st.number_input("Slab density (kg/m³)", min_value=1.0, value=2670.0, key="m6_density")
+        if st.button("Apply gravity reductions", key="m6_apply_gravity"):
+            try:
+                st.session_state.m6_products.append(apply_gravity_reductions(
+                    profile, datum_elevation_m=datum,
+                    bouguer_density_kg_m3=density if include_bouguer else None,
+                ))
+            except Exception as exc:
+                st.error(f"Gravity correction failed: {exc}")
+
+        base_upload = st.file_uploader("Magnetic base-station CSV", type=["csv"], key="m6_base_csv")
+        if base_upload is not None and st.button("Load base station", key="m6_load_base"):
+            try:
+                st.session_state.m6_base_station = BaseStationSeries.from_csv(
+                    base_upload.getvalue(), source_name=base_upload.name
+                )
+            except Exception as exc:
+                st.error(f"Could not load base station: {exc}")
+        reference_time = st.text_input(
+            "Diurnal reference time (UTC ISO-8601)", key="m6_reference_time",
+            placeholder="2026-01-01T12:00:00Z",
+        )
+        if st.button("Apply magnetic diurnal correction", key="m6_apply_diurnal"):
+            try:
+                if st.session_state.m6_base_station is None:
+                    raise ValueError("Load a base-station CSV first.")
+                st.session_state.m6_products.append(apply_magnetic_diurnal_correction(
+                    profile, st.session_state.m6_base_station, reference_time_utc=reference_time
+                ))
+            except Exception as exc:
+                st.error(f"Diurnal correction failed: {exc}")
+
+        degree = st.number_input("Polynomial regional degree", 0, 5, 1, key="m6_degree")
+        if st.button("Separate regional and residual", key="m6_regional"):
+            try:
+                st.session_state.m6_products.append(separate_polynomial_regional(
+                    profile.distance_m, channel_values, degree=int(degree), units=units
+                ))
+            except Exception as exc:
+                st.error(f"Regional separation failed: {exc}")
+
+        spacing = st.number_input("Regular sampling interval (m)", min_value=0.001, value=100.0, key="m6_spacing")
+        if st.button("Interpolate selected channel", key="m6_interpolate"):
+            try:
+                regular = interpolate_profile(profile.distance_m, channel_values, spacing_m=spacing, units=units)
+                st.session_state.m6_regular_profiles.append(RegularProfile(
+                    regular.distance_m, regular.values, regular.units,
+                    name=f"{channel_name}_linear_interpolation",
+                    parameters=regular.parameters, assumptions=regular.assumptions,
+                ))
+            except Exception as exc:
+                st.error(f"Interpolation failed: {exc}")
+
+        if st.session_state.m6_regular_profiles:
+            height = st.number_input("Upward continuation height (m)", min_value=0.0, value=0.0, key="m6_height")
+            padding = st.selectbox(
+                "Spectral edge treatment", ["reflect", "none"],
+                format_func=lambda value: "Reflect padding (review edges)" if value == "reflect" else "Periodic ends",
+                key="m6_padding",
+            )
+            if st.button("Calculate profile spectral transforms", key="m6_spectral"):
+                try:
+                    regular = st.session_state.m6_regular_profiles[-1]
+                    if not regular.name.startswith(channel_name):
+                        raise ValueError("Interpolate the selected channel before transforming it.")
+                    result = transform_profile(
+                        regular.values, spacing_m=regular.spacing_m, height_m=height,
+                        padding=padding, units=regular.units,
+                    )
+                    parameters = {"source_regular_profile": regular.name, "height_m": height,
+                                  "padding": padding, "spacing_m": regular.spacing_m,
+                                  "edge_effect_samples": result.edge_effect_samples}
+                    for output_name in (
+                        "upward_continued", "horizontal_derivative", "vertical_derivative_down",
+                        "analytic_signal", "tilt_angle_deg",
+                    ):
+                        st.session_state.m6_regular_profiles.append(RegularProfile(
+                            regular.distance_m, getattr(result, output_name), result.units[output_name],
+                            name=f"{regular.name}_{output_name}", parameters=parameters,
+                            assumptions=result.assumptions,
+                        ))
+                    st.info(f"Review the first and last {result.edge_effect_samples} samples for padding effects.")
+                except Exception as exc:
+                    st.error(f"Spectral transform failed: {exc}")
+
+        st.session_state.m6_processing_steps = _m6_processing_manifest(
+            st.session_state.m6_products, st.session_state.m6_regular_profiles
+        )
+        if st.session_state.m6_processing_steps:
+            st.write("Processing history", st.session_state.m6_processing_steps)
+        chart_data = {"Raw channel": channel_values}
+        for product in st.session_state.m6_products:
+            for name, values in product.columns.items():
+                if product.units[name] == channel_units:
+                    chart_data[name] = values
+        st.line_chart(pd.DataFrame(chart_data, index=profile.distance_m), height=240)
+        matching_regular = [
+            item for item in st.session_state.m6_regular_profiles
+            if item.name.startswith(channel_name)
+        ]
+        if matching_regular:
+            regular = matching_regular[-1]
+            st.line_chart(pd.DataFrame({regular.name: regular.values}, index=regular.distance_m), height=200)
+        bundle = export_processing_bundle(
+            profile, st.session_state.m6_products,
+            regular_profiles=st.session_state.m6_regular_profiles,
+        )
+        st.download_button(
+            "Download raw data, outputs, and provenance (.zip)", data=bundle,
+            file_name="KuffGravMag_Processing.zip", mime="application/zip", key="m6_bundle",
+        )
+        st.caption("Terrain corrections and IGRF/main-field subtraction are not included.")
+
+
 def _show_inversion_result(label, result):
     if not result.success:
         st.sidebar.error(f"{label} inversion stopped ({result.status}): {result.message}")
@@ -259,6 +449,8 @@ def _show_inversion_result(label, result):
         st.sidebar.caption(f"Approximate local 1σ errors: {uncertainty}")
     elif result.message:
         st.sidebar.caption(result.message)
+
+_render_m6_processing_panel()
 
 if st.sidebar.button("🚀 Run Gravity Inversion"):
     if st.session_state.obs_gz is None:
@@ -438,8 +630,13 @@ project_observations = {
     "magnetic": st.session_state.obs_dT,
 }
 project_fields = {"F": spin_F, "Inc": spin_Inc, "Dec": spin_Dec, "Alpha": spin_alpha}
-project_json = json.dumps(project_to_dict(st.session_state.bodies, project_fields,
-                                         project_observations), indent=2, allow_nan=False)
+project_json = json.dumps(project_to_dict(
+    st.session_state.bodies,
+    project_fields,
+    project_observations,
+    survey_profile=st.session_state.m6_profile,
+    processing_steps=st.session_state.m6_processing_steps,
+), indent=2, allow_nan=False)
 st.sidebar.download_button(
     "Save KuffGravMag Project (JSON)", data=project_json,
     file_name="KuffGravMag_Project.json", mime="application/json",

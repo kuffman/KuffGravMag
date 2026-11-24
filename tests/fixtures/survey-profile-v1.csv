@@ -1,0 +1,5 @@
+distance_m,elevation_m,gravity_mgal,magnetic_anomaly_nt,station_time_utc
+0,100,10,100,2026-01-01T00:00:00Z
+100,110,11,102,2026-01-01T00:01:00Z
+200,120,12,104,2026-01-01T00:02:00Z
+300,130,13,106,2026-01-01T00:03:00Z

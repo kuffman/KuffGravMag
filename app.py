@@ -6,7 +6,8 @@ import numpy as np
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QFormLayout, QDoubleSpinBox, QPushButton, QGroupBox, QListWidget,
-    QComboBox, QLabel, QFileDialog, QMessageBox, QDialog, QCheckBox
+    QComboBox, QLabel, QFileDialog, QMessageBox, QDialog, QCheckBox,
+    QLineEdit, QSpinBox, QTextEdit, QDialogButtonBox, QGridLayout
 )
 from PyQt6.QtGui import QAction
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -18,6 +19,15 @@ from engine.report import generate_pdf_report
 from engine.grid import extract_profile_from_xyz
 from engine.inversion import invert_body_parameters
 from engine.project import load_project as read_project, save_project as write_project
+from engine.survey import SurveyProfile, BaseStationSeries, export_processing_bundle
+from engine.processing import (
+    apply_gravity_reductions,
+    apply_magnetic_diurnal_correction,
+    separate_polynomial_regional,
+    interpolate_profile,
+    RegularProfile,
+)
+from engine.spectral import transform_profile
 
 COLOR_OPTIONS = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown']
 
@@ -82,6 +92,328 @@ class MapProfileDialog(QDialog):
             self.canvas.draw()
 
 
+class SurveyProcessingDialog(QDialog):
+    """Load a strict profile schema, run reversible processing, and export provenance."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("KuffGravMag — Survey Processing")
+        self.resize(760, 720)
+        self.profile = None
+        self.base_station = None
+        self.products = []
+        self.regular_profiles = []
+
+        root = QVBoxLayout(self)
+        form = QFormLayout()
+        root.addLayout(form)
+
+        self.profile_path = QLineEdit()
+        browse_profile = QPushButton("Browse…")
+        browse_profile.clicked.connect(self.browse_profile)
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(self.profile_path)
+        profile_row.addWidget(browse_profile)
+        form.addRow("Survey CSV:", profile_row)
+
+        self.coordinate_reference = QLineEdit("local profile coordinates")
+        form.addRow("Coordinate reference:", self.coordinate_reference)
+        self.profile_azimuth = QDoubleSpinBox()
+        self.profile_azimuth.setRange(-180.0, 180.0)
+        self.profile_azimuth.setDecimals(4)
+        form.addRow("Profile azimuth (deg):", self.profile_azimuth)
+        self.elevation_datum = QLineEdit("local survey benchmark")
+        form.addRow("Elevation datum:", self.elevation_datum)
+        self.reduction_datum_m = QDoubleSpinBox()
+        self.reduction_datum_m.setRange(-100000.0, 100000.0)
+        self.reduction_datum_m.setDecimals(3)
+        self.reduction_datum_m.setSuffix(" m")
+        form.addRow("Gravity reduction datum:", self.reduction_datum_m)
+        self.include_bouguer = QCheckBox("Apply declared infinite-slab correction")
+        self.include_bouguer.setChecked(False)
+        self.bouguer_density = QDoubleSpinBox()
+        self.bouguer_density.setRange(1.0, 10000.0)
+        self.bouguer_density.setValue(2670.0)
+        self.bouguer_density.setDecimals(1)
+        self.bouguer_density.setSuffix(" kg/m³")
+        form.addRow("Bouguer slab:", self.include_bouguer)
+        form.addRow("Slab density:", self.bouguer_density)
+
+        self.channel = QComboBox()
+        self.channel.addItem("Gravity (mGal)", "gravity")
+        self.channel.addItem("Magnetic anomaly (nT)", "magnetic")
+        form.addRow("Profile channel:", self.channel)
+        self.degree = QSpinBox()
+        self.degree.setRange(0, 5)
+        self.degree.setValue(1)
+        form.addRow("Regional polynomial degree:", self.degree)
+        self.spacing = QDoubleSpinBox()
+        self.spacing.setRange(0.001, 1.0e7)
+        self.spacing.setDecimals(3)
+        self.spacing.setValue(100.0)
+        self.spacing.setSuffix(" m")
+        form.addRow("Regular profile spacing:", self.spacing)
+        self.height = QDoubleSpinBox()
+        self.height.setRange(0.0, 1.0e7)
+        self.height.setDecimals(3)
+        self.height.setSuffix(" m")
+        form.addRow("Upward continuation height:", self.height)
+        self.padding = QComboBox()
+        self.padding.addItem("Reflect padding (review edges)", "reflect")
+        self.padding.addItem("Periodic ends (no padding)", "none")
+        form.addRow("Spectral edge treatment:", self.padding)
+
+        base_row = QHBoxLayout()
+        self.base_path = QLineEdit()
+        browse_base = QPushButton("Load base CSV…")
+        browse_base.clicked.connect(self.browse_base_station)
+        base_row.addWidget(self.base_path)
+        base_row.addWidget(browse_base)
+        form.addRow("Magnetic base station:", base_row)
+        self.reference_time = QLineEdit()
+        self.reference_time.setPlaceholderText("UTC ISO-8601, e.g. 2026-01-01T12:00:00Z")
+        form.addRow("Diurnal reference time:", self.reference_time)
+
+        load_btn = QPushButton("Load survey profile")
+        load_btn.clicked.connect(self.load_profile)
+        root.addWidget(load_btn)
+
+        operations = QGridLayout()
+        for index, (title, callback) in enumerate((
+            ("Gravity reductions", self.apply_gravity),
+            ("Magnetic diurnal", self.apply_diurnal),
+            ("Regional / residual", self.apply_regional),
+            ("Resample profile", self.resample),
+            ("Spectral transforms", self.apply_spectral),
+            ("Export processing ZIP…", self.export_bundle),
+        )):
+            button = QPushButton(title)
+            button.clicked.connect(callback)
+            operations.addWidget(button, index // 3, index % 3)
+        root.addLayout(operations)
+
+        self.preview_figure = Figure(figsize=(7, 2.4), dpi=100)
+        self.preview_canvas = FigureCanvas(self.preview_figure)
+        root.addWidget(self.preview_canvas)
+
+        self.log = QTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setPlaceholderText("Loaded profile details and processing assumptions will appear here.")
+        root.addWidget(self.log, stretch=1)
+        self.note = QLabel(
+            "The processing package records raw channels, units, assumptions, parameters, and hashes. "
+            "Terrain corrections and IGRF/main-field subtraction are not included."
+        )
+        self.note.setWordWrap(True)
+        root.addWidget(self.note)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Keep survey in project")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        root.addWidget(buttons)
+
+    def browse_profile(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Load versioned survey profile", "", "CSV (*.csv)")
+        if path:
+            self.profile_path.setText(path)
+
+    def browse_base_station(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Load magnetic base-station series", "", "CSV (*.csv)")
+        if path:
+            try:
+                self.base_station = BaseStationSeries.from_csv(path)
+                self.base_path.setText(path)
+                self._log(f"Loaded base station: {len(self.base_station.time_utc)} UTC readings.")
+            except Exception as exc:
+                QMessageBox.warning(self, "Base-station input error", str(exc))
+
+    def load_profile(self):
+        path = self.profile_path.text().strip()
+        try:
+            if not path:
+                raise ValueError("Choose a survey CSV first.")
+            metadata = {
+                "coordinate_reference": self.coordinate_reference.text(),
+                "profile_azimuth_deg": self.profile_azimuth.value(),
+                "elevation_datum": self.elevation_datum.text(),
+            }
+            self.profile = SurveyProfile.from_csv(path, metadata=metadata)
+            self.products.clear()
+            self.regular_profiles.clear()
+            channels = []
+            if self.profile.gravity_mgal is not None:
+                channels.append(("Gravity (mGal)", "gravity"))
+            if self.profile.magnetic_anomaly_nt is not None:
+                channels.append(("Magnetic anomaly (nT)", "magnetic"))
+            self.channel.clear()
+            for label, key in channels:
+                self.channel.addItem(label, key)
+            self._log(
+                f"Loaded {self.profile.distance_m.size} stations from {self.profile.provenance['source_name']} "
+                f"(SHA-256 {self.profile.provenance['source_sha256']}).\n"
+                f"Coordinate reference: {self.profile.metadata['coordinate_reference']}; "
+                f"azimuth: {self.profile.metadata['profile_azimuth_deg']}°; "
+                f"elevation datum: {self.profile.metadata['elevation_datum']}."
+            )
+            self._refresh_plot()
+        except Exception as exc:
+            QMessageBox.warning(self, "Survey input error", str(exc))
+
+    def _require_profile(self):
+        if self.profile is None:
+            raise ValueError("Load a versioned survey profile first.")
+        return self.profile
+
+    def _selected_channel(self):
+        profile = self._require_profile()
+        if self.channel.currentData() == "gravity":
+            return profile.gravity_mgal, "mGal"
+        return profile.magnetic_anomaly_nt, "nT total-field anomaly"
+
+    def _log(self, message):
+        self.log.append(message)
+
+    def apply_gravity(self):
+        try:
+            product = apply_gravity_reductions(
+                self._require_profile(),
+                datum_elevation_m=self.reduction_datum_m.value(),
+                bouguer_density_kg_m3=self.bouguer_density.value() if self.include_bouguer.isChecked() else None,
+            )
+            self.products.append(product)
+            self._log("Applied gravity reductions.\n" + "\n".join(product.assumptions))
+            self._refresh_plot()
+        except Exception as exc:
+            QMessageBox.warning(self, "Gravity processing error", str(exc))
+
+    def apply_diurnal(self):
+        try:
+            profile = self._require_profile()
+            if self.base_station is None:
+                raise ValueError("Load a base-station CSV with time_utc,total_field_nt first.")
+            product = apply_magnetic_diurnal_correction(
+                profile, self.base_station, reference_time_utc=self.reference_time.text()
+            )
+            self.products.append(product)
+            self._log("Applied magnetic diurnal correction.\n" + "\n".join(product.assumptions))
+            self._refresh_plot()
+        except Exception as exc:
+            QMessageBox.warning(self, "Magnetic processing error", str(exc))
+
+    def apply_regional(self):
+        try:
+            values, units = self._selected_channel()
+            product = separate_polynomial_regional(
+                self.profile.distance_m, values, degree=self.degree.value(), units=units
+            )
+            self.products.append(product)
+            self._log(f"Fit degree-{self.degree.value()} regional and residual.\n" + "\n".join(product.assumptions))
+            self._refresh_plot()
+        except Exception as exc:
+            QMessageBox.warning(self, "Regional separation error", str(exc))
+
+    def resample(self):
+        try:
+            values, units = self._selected_channel()
+            source = self._require_profile()
+            regular = interpolate_profile(
+                source.distance_m, values, spacing_m=self.spacing.value(), units=units
+            )
+            channel_name = str(self.channel.currentData())
+            regular = RegularProfile(
+                regular.distance_m,
+                regular.values,
+                regular.units,
+                name=f"{channel_name}_linear_interpolation",
+                parameters=regular.parameters,
+                assumptions=regular.assumptions,
+            )
+            self.regular_profiles.append(regular)
+            self._log(f"Created {regular.distance_m.size} regular samples at {regular.spacing_m:g} m spacing.")
+            self._refresh_plot()
+        except Exception as exc:
+            QMessageBox.warning(self, "Interpolation error", str(exc))
+
+    def apply_spectral(self):
+        try:
+            if not self.regular_profiles:
+                raise ValueError("Resample the selected channel first; Fourier transforms require regular sampling.")
+            regular = self.regular_profiles[-1]
+            if not regular.name.startswith(str(self.channel.currentData())):
+                raise ValueError("Resample the currently selected channel before transforming it.")
+            result = transform_profile(
+                regular.values,
+                spacing_m=regular.spacing_m,
+                height_m=self.height.value(),
+                padding=str(self.padding.currentData()),
+                units=regular.units,
+            )
+            parameters = {
+                "source_regular_profile": regular.name,
+                "height_m": self.height.value(),
+                "padding": self.padding.currentData(),
+                "spacing_m": regular.spacing_m,
+                "transform_assumptions": list(result.assumptions),
+                "edge_effect_samples": result.edge_effect_samples,
+            }
+            for output_name in (
+                "upward_continued", "horizontal_derivative", "vertical_derivative_down",
+                "analytic_signal", "tilt_angle_deg",
+            ):
+                self.regular_profiles.append(RegularProfile(
+                    regular.distance_m,
+                    getattr(result, output_name),
+                    result.units[output_name],
+                    name=f"{regular.name}_{output_name}",
+                    parameters=parameters,
+                    assumptions=result.assumptions,
+                ))
+            self._log(
+                "Calculated upward continuation, horizontal/vertical derivatives, analytic signal, and tilt. "
+                f"Review the first/last {result.edge_effect_samples} samples for padding effects.\n"
+                + "\n".join(result.assumptions)
+            )
+            self._refresh_plot()
+        except Exception as exc:
+            QMessageBox.warning(self, "Spectral processing error", str(exc))
+
+    def export_bundle(self):
+        try:
+            profile = self._require_profile()
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Export reproducible processing bundle", "KuffGravMag_Processing.zip", "ZIP (*.zip)"
+            )
+            if not path:
+                return
+            from pathlib import Path
+            Path(path).write_bytes(export_processing_bundle(profile, self.products, regular_profiles=self.regular_profiles))
+            QMessageBox.information(self, "Processing export", f"Saved raw inputs, outputs, and provenance to {path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Processing export error", str(exc))
+
+    def _refresh_plot(self):
+        self.preview_figure.clear()
+        if self.profile is None:
+            self.preview_canvas.draw_idle()
+            return
+        axis = self.preview_figure.add_subplot(111)
+        values, units = self._selected_channel()
+        axis.plot(self.profile.distance_m, values, color="black", marker=".", label="Raw channel")
+        for product in self.products:
+            for name, result in product.columns.items():
+                if product.units[name] == units:
+                    axis.plot(self.profile.distance_m, result, label=name)
+        for regular in self.regular_profiles:
+            if regular.name.startswith(str(self.channel.currentData())):
+                axis.plot(regular.distance_m, regular.values, label=regular.name)
+        axis.set_xlabel("Profile distance (m)")
+        axis.set_ylabel(units)
+        axis.grid(True, alpha=0.25)
+        axis.legend(fontsize=7, ncol=2, loc="best")
+        self.preview_figure.tight_layout()
+        self.preview_canvas.draw_idle()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -92,6 +424,10 @@ class MainWindow(QMainWindow):
         self.z_obs = np.zeros_like(self.x_obs)
         self.obs_gz = None
         self.obs_dT = None
+        self.survey_profile = None
+        self.processing_products = []
+        self.regular_profiles = []
+        self.processing_steps = []
         self.dragging_vertex = None
 
         # Default Bodies
@@ -322,6 +658,10 @@ class MainWindow(QMainWindow):
         import_obs_action.triggered.connect(self.import_observed_csv)
         file_menu.addAction(import_obs_action)
 
+        process_survey_action = QAction("Process Versioned Survey Profile…", self)
+        process_survey_action.triggered.connect(self.open_survey_processing)
+        file_menu.addAction(process_survey_action)
+
         export_calc_action = QAction("Export Calculated Results (CSV)", self)
         export_calc_action.triggered.connect(self.export_results_csv)
         file_menu.addAction(export_calc_action)
@@ -331,6 +671,33 @@ class MainWindow(QMainWindow):
         pdf_report_action = QAction("Generate Executive PDF Report", self)
         pdf_report_action.triggered.connect(self.generate_pdf)
         file_menu.addAction(pdf_report_action)
+
+    def open_survey_processing(self):
+        dialog = SurveyProcessingDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or dialog.profile is None:
+            return
+        self.survey_profile = dialog.profile
+        self.processing_products = list(dialog.products)
+        self.regular_profiles = list(dialog.regular_profiles)
+        self.processing_steps = (
+            [product.to_manifest() for product in self.processing_products]
+            + [
+                {
+                    "name": item.name,
+                    "parameters": dict(item.parameters or {}),
+                    "assumptions": list(item.assumptions),
+                    "spacing_m": item.spacing_m,
+                    "units": item.units,
+                }
+                for item in self.regular_profiles
+            ]
+        )
+        QMessageBox.information(
+            self,
+            "Survey processing saved",
+            f"Saved {self.survey_profile.distance_m.size} raw survey stations and "
+            f"{len(self.processing_steps)} processing records in the project state.",
+        )
 
     def run_inversion(self, field_type):
         target_data = self.obs_gz if field_type == 'gravity' else self.obs_dT
@@ -553,7 +920,14 @@ class MainWindow(QMainWindow):
             "magnetic": self.obs_dT,
         }
         try:
-            write_project(file_path, self.bodies, self.field_params(), observations)
+            write_project(
+                file_path,
+                self.bodies,
+                self.field_params(),
+                observations,
+                survey_profile=self.survey_profile,
+                processing_steps=self.processing_steps,
+            )
             QMessageBox.information(self, "Project Saved", f"Saved project to {file_path}")
         except Exception as exc:
             QMessageBox.critical(self, "Project Save Error", f"Could not save project:\n{exc}")
@@ -586,6 +960,10 @@ class MainWindow(QMainWindow):
                 self.z_obs = observations["z"]
             self.obs_gz = observations["gravity"]
             self.obs_dT = observations["magnetic"]
+            self.survey_profile = project["survey_profile"]
+            self.processing_steps = project["processing_steps"]
+            self.processing_products = []
+            self.regular_profiles = []
             self.active_body_idx = 0
             self.refresh_body_list()
             self.recalculate_and_plot()
