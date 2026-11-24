@@ -291,6 +291,10 @@ class PotentialField2D:
         )
         Mz = k_succ * H0 * math.sin(inclination) + J_r * math.sin(remanent_inclination)
 
+        if Mx == 0.0 and Mz == 0.0:
+            zeros = np.zeros_like(x_obs, dtype=np.float64)
+            return zeros, zeros.copy(), zeros.copy()
+
         infinite_strike = is_infinite_strike_reference(y1, y2)
         y_avg = 0.5 * abs(y1) + 0.5 * abs(y2) if not infinite_strike else math.inf
         dX_nT = np.zeros_like(x_obs, dtype=np.float64)

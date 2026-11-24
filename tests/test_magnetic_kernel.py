@@ -207,6 +207,16 @@ def test_horizontal_symmetry_for_vertical_magnetization():
     np.testing.assert_allclose(d_z[0], d_z[1], rtol=1e-12, atol=1e-12)
 
 
+def test_edge_interior_uses_finite_principal_value_and_is_winding_independent():
+    points = _centered_rectangle()
+    forward = _calculate(_body(points, mx=0.7, mz=-0.4), [0.0], [200.0])
+    reverse = _calculate(_body(points[::-1], mx=0.7, mz=-0.4), [0.0], [200.0])
+    for field in forward + reverse:
+        assert np.all(np.isfinite(field))
+    for first, second in zip(forward, reverse):
+        np.testing.assert_allclose(first, second, rtol=1e-12, atol=1e-12)
+
+
 def test_magnetic_fields_superpose_across_bodies():
     first = _body(_centered_rectangle(), mx=0.8, mz=-0.2)
     second = _body(_centered_rectangle(60.0, 500.0, 650.0), mx=-0.1, mz=0.6)
@@ -232,9 +242,12 @@ def test_susceptibility_scaling_and_zero_magnetization():
     base = _calculate(_body(points, susceptibility=0.02), [0.0], [0.0], F_nT=48_000, I_f=27, D_f=63, alpha=19)
     doubled = _calculate(_body(points, susceptibility=0.04), [0.0], [0.0], F_nT=48_000, I_f=27, D_f=63, alpha=19)
     zero = _calculate(_body(points), [0.0], [0.0], F_nT=48_000, I_f=27, D_f=63, alpha=19)
+    zero_at_vertex = _calculate(_body(points), [-100.0], [200.0], F_nT=48_000, I_f=27, D_f=63, alpha=19)
     for first, twice in zip(base, doubled):
         np.testing.assert_allclose(twice, 2.0 * first, rtol=1e-12, atol=1e-12)
     for component in zero:
+        np.testing.assert_array_equal(component, [0.0])
+    for component in zero_at_vertex:
         np.testing.assert_array_equal(component, [0.0])
 
 

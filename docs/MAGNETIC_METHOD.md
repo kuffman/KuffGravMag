@@ -62,7 +62,7 @@ N = 0, q = 0 (principal-value mean on an edge)
 sigma_m ds = sA (Mx uz - Mz ux)
 ```
 
-The implementation sums `sA (Mx uz - Mz ux) (T t + N n_left)` over the closed boundary and multiplies by `mu0/(2 pi) * 1e9` to return nT. The signed-area factor changes the outward normal with input winding, so reversing the vertex order leaves the physical field unchanged. A field evaluation at a polygon vertex is singular and raises `ValueError`; repeated adjacent vertices are cleaned and self-intersecting or zero-area polygons are rejected. At an observation lying in an edge interior, `q = 0` uses the principal-value mean for the normal component.
+The implementation sums `sA (Mx uz - Mz ux) (T t + N n_left)` over the closed boundary and multiplies by `mu0/(2 pi) * 1e9` to return nT. The signed-area factor changes the outward normal with input winding, so reversing the vertex order leaves the physical field unchanged. A nonzero field evaluation at a polygon vertex is singular and raises `ValueError`; repeated adjacent vertices are cleaned and self-intersecting or zero-area polygons are rejected. A zero-magnetization body returns zero even at a vertex. At an observation lying in an edge interior, `q = 0` uses the principal-value mean for the normal component.
 
 As an independent reference, the volume integral of the 3D dipole field can itself be integrated over the infinite strike coordinate analytically. For `R = (Rx, Rz)` in the cross-section,
 
@@ -111,10 +111,10 @@ This is a linearized total-field anomaly, not the exact norm difference. It matc
 - Horizontal and vertical centered-rectangle analytical values, including both polygon windings: relative and absolute tolerance `1e-10` nT.
 - A nonrectangular triangle compared to independent area integration of the 3D dipole field after strike integration: 72-point Gaussian quadrature per mapped coordinate; `rtol=2e-7`, `atol=2e-7` nT.
 - Induced magnetization and `dT` for horizontal/equatorial, low-inclination off-profile, oblique-profile, and near-vertical field cases: `rtol=1e-10`, `atol=1e-10` nT.
-- Remanent declination to profile-azimuth rotation, direct oblique total-field projection, horizontal symmetry for horizontal and vertical magnetization, multi-body superposition, susceptibility scaling, and zero magnetization.
+- Remanent declination to profile-azimuth rotation, direct oblique total-field projection, horizontal symmetry for horizontal and vertical magnetization, edge-interior principal values, multi-body superposition, susceptibility scaling, and zero magnetization (including a vertex observation).
 - Invalid self-intersecting geometry, nonfinite observations, and a singular polygon-vertex observation.
 
-The 16-case magnetic suite was run against the reviewed pre-fix kernel before implementation: **12 failed and 4 passed**, exposing the polarity/winding rectangle, both analytical components, remanent azimuth, the independent triangle, all five field-angle cases, the direct total-field projection, invalid geometry, and the singular vertex case. After correction, all 16 magnetic regression cases pass. The full gravity and magnetic suite is reported in `docs/BASELINE_AND_VALIDATION.md` after the final locked run.
+The 17-case magnetic suite was run against the reviewed pre-fix kernel before implementation: **13 failed and 4 passed**, exposing the polarity/winding rectangle, both analytical components, remanent azimuth, the independent triangle, all five field-angle cases, the direct total-field projection, edge-winding behavior, invalid geometry, and the singular vertex case. After correction, all 17 magnetic regression cases pass. The full gravity and magnetic suite is reported in `docs/BASELINE_AND_VALIDATION.md` after the final locked run.
 
 ## References
 
