@@ -8,6 +8,7 @@ import numpy as np
 from engine.forward import Body2D
 from engine.model_status import model_status_lines
 from engine.project import load_project, save_project
+from engine.survey import SurveyProfile
 
 
 def _body(name, *, mode, y_min, y_max, color="tab:blue"):
@@ -47,7 +48,31 @@ def test_project_round_trip_preserves_field_observations_and_physical_parameters
             magnetic.I_r, magnetic.D_r, magnetic.color) == (
                 420.0, 0.035, 1.25, 32.0, 71.0, "tab:blue"
             )
-    assert json.loads(path.read_text())["schema_version"] == 1
+    assert json.loads(path.read_text())["schema_version"] == 2
+
+
+def test_project_round_trip_preserves_survey_metadata_provenance_and_processing_steps(tmp_path):
+    profile = SurveyProfile.from_csv(
+        b"distance_m,elevation_m,gravity_mgal,magnetic_anomaly_nt\n0,10,1,2\n100,12,,3\n",
+        metadata={
+            "coordinate_reference": "EPSG:32630",
+            "profile_azimuth_deg": 52.0,
+            "elevation_datum": "local benchmark 100 m",
+        },
+        source_name="survey.csv",
+    )
+    steps = [{"name": "gravity_reduction", "datum_elevation_m": 100.0}]
+    path = tmp_path / "survey-project.json"
+    save_project(path, [_body("Finite", mode="finite", y_min=-10, y_max=10)], {},
+                 survey_profile=profile, processing_steps=steps)
+    loaded = load_project(path)
+
+    assert loaded["survey_profile"].metadata == profile.metadata
+    assert loaded["survey_profile"].provenance == profile.provenance
+    np.testing.assert_array_equal(loaded["survey_profile"].distance_m, profile.distance_m)
+    assert np.isnan(loaded["survey_profile"].gravity_mgal[1])
+    assert loaded["processing_steps"] == steps
+    assert json.loads(path.read_text())["schema_version"] == 2
 
 
 def test_legacy_project_zero_bounds_remain_infinite_but_explicit_zero_width_is_finite():

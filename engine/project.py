@@ -7,9 +7,10 @@ from pathlib import Path
 import numpy as np
 
 from engine.forward import Body2D
+from engine.survey import SurveyProfile
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _bound_to_json(value):
@@ -56,7 +57,9 @@ def _body_to_dict(body):
     }
 
 
-def project_to_dict(bodies, field_params, observations=None):
+def project_to_dict(
+    bodies, field_params, observations=None, *, survey_profile=None, processing_steps=None
+):
     """Return a JSON-serializable project snapshot of all model settings."""
     observations = observations or {}
     field_params = dict(field_params or {})
@@ -66,17 +69,35 @@ def project_to_dict(bodies, field_params, observations=None):
         clean_observations[key] = (
             None if value is None else np.asarray(value, dtype=np.float64).tolist()
         )
+    survey_record = None
+    if survey_profile is not None:
+        survey_record = survey_profile.to_dict() if isinstance(survey_profile, SurveyProfile) else survey_profile
+        if not isinstance(survey_record, dict):
+            raise ValueError("survey_profile must be a SurveyProfile or mapping")
+        json.dumps(survey_record, allow_nan=False)
+    steps = list(processing_steps or ())
+    if any(not isinstance(step, dict) for step in steps):
+        raise ValueError("processing_steps must be a sequence of objects")
+    json.dumps(steps, allow_nan=False)
     return {
         "schema_version": SCHEMA_VERSION,
         "field_params": {str(key): float(value) for key, value in field_params.items()},
         "observations": clean_observations,
         "bodies": [_body_to_dict(body) for body in bodies],
+        "survey_profile": survey_record,
+        "processing_steps": steps,
     }
 
 
-def save_project(filename, bodies, field_params, observations=None):
+def save_project(filename, bodies, field_params, observations=None, *, survey_profile=None, processing_steps=None):
     """Write a project JSON file with no non-standard NaN/Infinity tokens."""
-    payload = project_to_dict(bodies, field_params, observations)
+    payload = project_to_dict(
+        bodies,
+        field_params,
+        observations,
+        survey_profile=survey_profile,
+        processing_steps=processing_steps,
+    )
     path = Path(filename)
     path.write_text(json.dumps(payload, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     return path
@@ -151,9 +172,17 @@ def load_project(source):
     for coord in ("x", "z"):
         if observations[coord] is not None and not np.all(np.isfinite(observations[coord])):
             raise ValueError(f"Project observation {coord} values must be finite")
+    survey_data = data.get("survey_profile")
+    survey_profile = None if survey_data is None else SurveyProfile.from_dict(survey_data)
+    processing_steps = data.get("processing_steps", [])
+    if not isinstance(processing_steps, list) or any(not isinstance(step, dict) for step in processing_steps):
+        raise ValueError("Project processing_steps must be a list of objects")
+    json.dumps(processing_steps, allow_nan=False)
     return {
         "schema_version": SCHEMA_VERSION,
         "bodies": [_body_from_dict(body) for body in body_data],
         "field_params": field_params,
         "observations": observations,
+        "survey_profile": survey_profile,
+        "processing_steps": processing_steps,
     }

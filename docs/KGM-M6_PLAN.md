@@ -1,7 +1,30 @@
 # KGM-M6 plan — geophysical data processing
 
-This is a plan only. Implementation should begin after KGM-M5 has been reviewed
-and accepted.
+KGM-M5 was merged to `main` in merge commit `53b8ddc`. KGM-M6 implementation
+begins from that integrated baseline and is delivered in reviewable stages.
+
+## M6.1 — validated profile-processing core
+
+Implemented on `codex/kgm-m6-processing-core`:
+
+- Versioned profile and base-station schemas with explicit units, coordinate
+  metadata, missing-value behavior, and source hashes.
+- Free-air and infinite Bouguer-slab reductions, with raw channels retained;
+  magnetic diurnal correction from a supplied base series.
+- Polynomial regional/residual separation, linear profile interpolation, and
+  scattered XYZ gridding with a convex-hull mask.
+- 1D profile and 2D grid Fourier transforms, derivatives, analytic signal, tilt,
+  and edge-treatment metadata.
+- A fixed-structural-index Euler source/depth solver with rank and conditioning
+  diagnostics, validated against a synthetic analytic point source.
+- Desktop/web profile-processing controls, project JSON schema version 2, and
+  reproducible processing-bundle export.
+
+The equations, input schemas, limitations, and benchmark coverage are recorded
+in [KGM-M6 processing](KGM-M6_PROCESSING.md). Terrain corrections, IGRF/main-field
+corrections, stabilized low-latitude reductions, and interactive Euler-grid
+controls remain deferred pending validated inputs, independent references, or
+a tested interpretation workflow.
 
 ## Goal
 
