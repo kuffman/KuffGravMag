@@ -87,4 +87,3 @@ def test_status_text_distinguishes_validated_finite_and_infinite_models():
     lines = model_status_lines([finite, infinite])
     assert any("Finite Strike" in line and "closed-form" in line for line in lines)
     assert any("Infinite Strike" in line and "benchmarked" in line for line in lines)
-

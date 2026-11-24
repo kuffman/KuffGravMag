@@ -257,4 +257,3 @@ def test_finite_strike_converges_to_infinite_strike_kernels():
     infinite_mag = infinite_engine.calculate_magnetics_components(x_obs, z_obs, 48_000, 25, 60, 15)
     for actual, expected in zip(finite_mag, infinite_mag):
         np.testing.assert_allclose(actual, expected, rtol=1e-7, atol=2e-5)
-
