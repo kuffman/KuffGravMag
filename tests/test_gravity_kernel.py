@@ -3,7 +3,7 @@ import math
 import numpy as np
 import pytest
 
-from engine.forward import Body2D, PotentialField2D
+from engine.forward import Body2D, PotentialField2D, is_infinite_strike_reference
 
 
 G = 6.67430e-11
@@ -83,6 +83,12 @@ def test_explicit_infinite_strike_matches_legacy_no_correction_sentinel():
     legacy_no_correction = gravity_for_polygon(x, z, y1=0.0, y2=0.0)
 
     np.testing.assert_allclose(explicit_infinite, legacy_no_correction, rtol=1e-12, atol=1e-12)
+
+
+def test_strike_reference_status_distinguishes_finite_bounds():
+    assert is_infinite_strike_reference(-math.inf, math.inf)
+    assert is_infinite_strike_reference(0.0, 0.0)
+    assert not is_infinite_strike_reference(-500.0, 500.0)
 
 
 def test_nonrectangular_polygon_matches_independent_area_quadrature():

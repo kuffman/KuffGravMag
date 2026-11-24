@@ -53,7 +53,7 @@ with its continuous limiting value used when `q = 0` or the observation is on th
 
 ## Finite strike and other unvalidated calculations
 
-Finite strike remains outside KGM-M1. For finite bounds, the code retains the old per-edge midpoint multiplier based on `0.5 (|y_min| + |y_max|) / sqrt(r_mid² + y_avg²)`. It is an approximation, particularly for asymmetric extents; it is not an exact end correction and has not been validated here. Use the infinite-strike reference by setting both bounds to `(-inf, +inf)`. The legacy pair `(0, 0)` also remains a sentinel that disables the strike multiplier; it does not represent a physical zero-width strike.
+Finite strike remains outside KGM-M1. For finite bounds, the code retains the old per-edge midpoint multiplier based on `0.5 (|y_min| + |y_max|) / sqrt(r_mid² + y_avg²)`. It is an approximation, particularly for asymmetric extents; it is not an exact end correction and has not been validated here. The desktop, web, and PDF outputs label finite-strike gravity as approximate and unvalidated. Use the infinite-strike reference by setting both bounds to `(-inf, +inf)`. The legacy pair `(0, 0)` also remains a sentinel that disables the strike multiplier; it does not represent a physical zero-width strike.
 
 The magnetic kernel and inversion routines were not changed. The earlier review's winding/polarity and field-projection concerns, plus the desktop inversion argument mismatch and optimizer-status issues, remain open.
 
@@ -63,6 +63,7 @@ The magnetic kernel and inversion routines were not changed. The earlier review'
 - A nonrectangular triangle compares the kernel to direct Gaussian quadrature of the area integral at `2e-6` relative tolerance. The source polygon is separated from the observation, so that independent quadrature has no singular point.
 - Symmetry, linear superposition, vertical translation, and winding invariance use `1e-12` relative/absolute tolerances.
 - These checks establish synthetic mathematical consistency for the 2D gravity calculation. They do not validate field data, finite-strike results, magnetics, or inversion.
+- `.github/workflows/scientific-tests.yml` installs the locked Python test environment and runs the suite on pushes and pull requests.
 
 ## Next milestones
 

@@ -40,4 +40,6 @@ The suite covers the positive-down analytical rectangle, an independent triangle
 
 ## Scope and limitations
 
-This change corrects the 2D infinite-strike gravity edge integral and its polygon handling. Finite-strike gravity still uses the previous midpoint multiplier, which is not a validated end correction. Magnetic polarity, field projection, and inversion behavior are unchanged and remain follow-up work.
+The desktop, web, and PDF outputs identify the gravity model as either 2D infinite-strike (checked against analytical and independent numerical benchmarks) or approximate finite-strike. Finite-strike gravity still uses the previous midpoint multiplier, which is not a validated end correction. Magnetic polarity, field projection, and inversion behavior remain follow-up work.
+
+GitHub Actions runs the locked scientific regression suite on pushes and pull requests. The existing Windows packaging workflow remains separate.

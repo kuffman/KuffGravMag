@@ -40,10 +40,11 @@ Use `uv sync --locked --all-groups` to install the web, desktop, build, and deve
 |---|---|
 | Exact benchmark before the kernel change | Failed as expected: −0.2918924291 mGal instead of +0.8870240147 mGal |
 | Regression suite before the kernel change | 14 failed, 2 passed; the failures exposed the benchmark, invalid-input handling, edge observations, and explicit infinite-strike bounds |
-| Regression suite after the kernel change | 18 passed |
+| Regression suite after the gravity-kernel change | 19 passed |
 | `compileall` for application, engine, and tests | Passed |
 | `git diff --check` | Passed |
+| Locked CI workflow | Added for pull requests and branch pushes using Python 3.11.18 and uv 0.13.9 |
 
 The suite's closed-form rectangle tolerance is `1e-6` relative. The rectangle, winding, symmetry, superposition, depth/elevation, and geometry regressions were written before the kernel edit. The nonrectangular triangle area-quadrature check and explicit infinite-bound equivalence check were added afterward as additional cross-checks. The triangle uses 64-point-per-axis Gaussian quadrature with `2e-6` relative tolerance. Symmetry, superposition, translation, and winding comparisons use `1e-12` relative/absolute tolerances where appropriate.
 
-All locked dependency groups were installed and the lock check passed. The regression suite was run in that environment. The desktop and web interfaces were not launched, and the Windows packaging workflow was not run locally.
+All locked dependency groups were installed and the lock check passed. The regression suite was run in that environment. The desktop and web interfaces were not launched, and the Windows packaging workflow was not run locally. The desktop, web, and PDF outputs now state whether the gravity result uses the benchmarked infinite-strike reference or the unvalidated finite-strike midpoint approximation.

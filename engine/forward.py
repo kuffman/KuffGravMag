@@ -3,6 +3,15 @@ import math
 import numpy as np
 
 
+def is_infinite_strike_reference(y_min, y_max):
+    """Return whether legacy strike settings select the 2D no-correction model."""
+    try:
+        y_min, y_max = float(y_min), float(y_max)
+    except (TypeError, ValueError):
+        return False
+    return (y_min == 0.0 and y_max == 0.0) or (y_min == -math.inf and y_max == math.inf)
+
+
 class Body2D:
     """
     Represents a 2.5D polygonal geological body with finite strike length (Y_min, Y_max).
@@ -188,7 +197,7 @@ class PotentialField2D:
             raise ValueError("Density contrast must be finite")
         if math.isnan(y1) or math.isnan(y2) or y1 > y2:
             raise ValueError("Strike bounds must be ordered and cannot be NaN")
-        infinite_strike = y1 == -math.inf and y2 == math.inf
+        infinite_strike = is_infinite_strike_reference(y1, y2)
         if not infinite_strike and (not math.isfinite(y1) or not math.isfinite(y2)):
             raise ValueError("Only the symmetric infinite-strike bounds (-inf, inf) are supported")
 

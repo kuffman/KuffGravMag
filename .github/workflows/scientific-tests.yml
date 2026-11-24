@@ -1,0 +1,34 @@
+name: Scientific regression tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python scientific suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up locked uv and Python
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.9"
+          python-version: "3.11.18"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked test dependencies
+        run: uv sync --locked
+
+      - name: Run scientific regression suite
+        run: uv run --locked python -m pytest -q
