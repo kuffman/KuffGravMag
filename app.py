@@ -707,6 +707,13 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    if not app.screens():
+        sys.stderr.write(
+            "KuffGravMag could not find an active display. The Qt platform plugin "
+            "loaded, but this process has no available screens. Launch the desktop "
+            "app from a logged-in graphical session.\n"
+        )
+        raise SystemExit(2)
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
