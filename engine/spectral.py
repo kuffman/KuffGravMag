@@ -75,7 +75,9 @@ def transform_profile(
     Fourier wavenumber is along-profile only. ``padding='none'`` assumes the
     supplied line repeats periodically. Reflect padding is the default and
     marks a conservative edge band that must be reviewed before interpretation.
-    The vertical derivative is positive downward; the tilt is ``atan2(VDR,HDR)``.
+    The vertical derivative is positive downward; the tilt is
+    ``atan2(VDR, abs(HDR))``, the 1D equivalent of using horizontal-gradient
+    magnitude in the 2D grid calculation.
     """
     data = np.asarray(values, dtype=np.float64)
     spacing = _valid_spacing(spacing_m, "spacing_m")
@@ -97,7 +99,7 @@ def transform_profile(
     derivative_x = _real_crop(derivative_x, pad, -pad if pad else None)
     derivative_down = _real_crop(derivative_down, pad, -pad if pad else None)
     analytic = np.hypot(derivative_x, derivative_down)
-    tilt = np.degrees(np.arctan2(derivative_down, derivative_x))
+    tilt = np.degrees(np.arctan2(derivative_down, np.abs(derivative_x)))
     edge_mask = np.zeros(data.size, dtype=bool)
     if pad:
         edge_mask[:pad] = True

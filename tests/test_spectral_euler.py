@@ -22,6 +22,11 @@ def test_profile_spectral_filters_match_a_periodic_fourier_mode():
     assert result.horizontal_derivative == pytest.approx(-k * attenuation * np.sin(k * x), abs=1e-12)
     assert result.vertical_derivative_down == pytest.approx(k * attenuation * values, abs=1e-12)
     assert result.analytic_signal == pytest.approx(np.full(n, k * attenuation), abs=1e-12)
+    expected_tilt = np.degrees(np.arctan2(
+        k * attenuation * values,
+        np.abs(-k * attenuation * np.sin(k * x)),
+    ))
+    assert result.tilt_angle_deg == pytest.approx(expected_tilt, abs=1e-12)
     assert result.units["horizontal_derivative"] == "input_unit/m"
     assert result.edge_effect_samples == 0
 
