@@ -26,6 +26,7 @@ from validation.inversion_studies import (
     geometry_identifiability_study,
     run_noise_recovery_ensemble,
 )
+from validation.report import reports_match
 
 
 def _rectangular_body(
@@ -311,6 +312,20 @@ def test_deterministic_noise_ensemble_reports_tradeoffs_and_uncertainty():
     assert identifiability["numerical_rank"] < identifiability["parameter_count"]
     assert not identifiability["identifiable"]
     assert not identifiability["uncertainty_available"]
+
+
+def test_validation_report_check_tolerates_only_small_metric_drift():
+    baseline = (
+        "- Maximum finite-prism gravity residual against the independent Nagy corner sum: "
+        "`1.554e-15 mGal`.\n"
+        "- `uv.lock` SHA-256: `abc123`\n"
+    )
+    cross_platform_rounding = baseline.replace("1.554e-15", "1.555e-15")
+    beyond_tolerance = baseline.replace("1.554e-15", "2.000e-10")
+    changed_provenance = baseline.replace("abc123", "def456")
+    assert reports_match(baseline, cross_platform_rounding)
+    assert not reports_match(baseline, beyond_tolerance)
+    assert not reports_match(baseline, changed_provenance)
 
 
 def test_harmonica_rectangular_prism_gravity_comparison_maps_vertical_signs():

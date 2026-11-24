@@ -111,7 +111,10 @@ uv run --locked --group validation python -m validation.report --check docs/VALI
 
 The report records the optional library versions, the `uv.lock` SHA-256, fixed
 random seed, trial count, numerical comparisons, and limitations. It omits
-timestamps so regeneration can be checked byte-for-byte. The
+timestamps. Provenance, versions, seeds, and prose must match exactly; computed
+metrics are checked against the tolerances exercised by the regressions so
+cross-platform floating-point rounding does not invalidate an otherwise
+reproducible result. The
 `independent-validation` GitHub Actions job installs the locked optional group,
 runs the full suite with Harmonica comparisons enabled, and checks the report.
 

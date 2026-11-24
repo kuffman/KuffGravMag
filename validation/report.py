@@ -7,6 +7,7 @@ import hashlib
 from importlib.metadata import version
 import math
 from pathlib import Path
+import re
 import tomllib
 
 import numpy as np
@@ -31,6 +32,82 @@ from validation.inversion_studies import (
     geometry_identifiability_study,
     run_noise_recovery_ensemble,
 )
+
+
+_REPORT_NUMBER = re.compile(r"(?<![\w.])[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?")
+
+
+def _metric_tolerances(line: str, number_count: int) -> list[tuple[float, float]] | None:
+    """Return (relative, absolute) comparison tolerances for computed lines."""
+    if line.startswith("- Centered infinite-strike rectangle analytical gravity:"):
+        return [(1e-12, 1e-12)] * number_count
+    if line.startswith((
+        "- Maximum finite-prism gravity residual",
+        "- Finite-prism gravity residual",
+        "- Maximum downward gravity residual",
+    )):
+        return [(0.0, 2e-11)] * number_count
+    if line.startswith("- Maximum finite-prism magnetic component residual"):
+        return [(0.0, 3e-8)] * number_count
+    if line.startswith("- Concave infinite-strike polygon residual"):
+        return [(0.0, 2e-10)] * number_count
+    if line.startswith("- Maximum `dX`, `dY`, or `dZ` residual"):
+        return [(0.0, 3e-8)] * number_count
+    if line.startswith("- Maximum gravity residual across"):
+        return [(0.0, 0.0)] * (number_count - 1) + [(0.0, 1e-11)]
+    if line.startswith("- At a 20 km observation offset,"):
+        return [(0.0, 0.0)] + [(5e-3, 1e-12)] * (number_count - 1)
+    if line.startswith(("| 0.01 |", "| 0.03 |", "| 0.10 |")):
+        return [(0.0, 0.0), (0.0, 5e-3), (0.0, 5e-3), (0.0, 2e-3), (0.0, 0.0)]
+    if line.startswith("A shallow `"):
+        return [
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.05),
+            (0.0, 0.0),
+            (0.0, 1e-12),
+            (0.0, 0.0),
+            (0.0, 1e-3),
+        ]
+    return None
+
+
+def reports_match(expected: str, actual: str) -> bool:
+    """Compare report text exactly and computed metrics within stated tolerances.
+
+    Provenance, versions, lock digest, seeds, and narrative remain exact. Only
+    formatted numerical results use metric-specific tolerances so the same
+    locked report can be checked across operating systems and math libraries.
+    """
+    expected_lines, actual_lines = expected.splitlines(), actual.splitlines()
+    if len(expected_lines) != len(actual_lines):
+        return False
+    for expected_line, actual_line in zip(expected_lines, actual_lines):
+        if expected_line == actual_line:
+            continue
+        expected_numbers = _REPORT_NUMBER.findall(expected_line)
+        actual_numbers = _REPORT_NUMBER.findall(actual_line)
+        tolerances = _metric_tolerances(expected_line, len(expected_numbers))
+        expected_shape = _REPORT_NUMBER.sub("<number>", expected_line)
+        actual_shape = _REPORT_NUMBER.sub("<number>", actual_line)
+        if (
+            tolerances is None
+            or expected_shape != actual_shape
+            or len(expected_numbers) != len(actual_numbers)
+            or len(tolerances) != len(expected_numbers)
+        ):
+            return False
+        try:
+            if not all(
+                math.isclose(float(left), float(right), rel_tol=relative, abs_tol=absolute)
+                for left, right, (relative, absolute) in zip(
+                    expected_numbers, actual_numbers, tolerances
+                )
+            ):
+                return False
+        except ValueError:
+            return False
+    return True
 
 
 def _body(*, density=500.0, susceptibility=0.04, remanence=1.7, remanent_inc=30.0,
@@ -351,8 +428,8 @@ def main(argv: list[str] | None = None) -> int:
         target = Path(args.check)
         if not target.is_file():
             parser.error(f"report does not exist: {target}")
-        if target.read_text(encoding="utf-8") != report:
-            print(f"Validation report is stale: {target}")
+        if not reports_match(target.read_text(encoding="utf-8"), report):
+            print(f"Validation report differs beyond its metric tolerances: {target}")
             return 1
         print(f"Validation report matches: {target}")
         return 0
