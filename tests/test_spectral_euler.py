@@ -99,6 +99,32 @@ def test_euler_deconvolution_recovers_analytic_point_source_and_reports_conditio
     assert result.rms_residual < 1e-9
 
 
+def test_euler_deconvolution_supports_zero_structural_index_without_fitting_base_level():
+    x_m = np.linspace(-1200.0, 1200.0, 31)
+    y_m = np.linspace(-900.0, 900.0, 25)
+    xx, yy = np.meshgrid(x_m, y_m)
+    x0, y0, z0 = 120.0, -80.0, -600.0
+    rx, ry, rz = xx - x0, yy - y0, -z0
+    radius = np.sqrt(rx**2 + ry**2 + rz**2)
+    values = rx / radius
+    derivative_x = 1.0 / radius - rx**2 / radius**3
+    derivative_y = -rx * ry / radius**3
+    derivative_z_up = -rx * rz / radius**3
+
+    result = euler_deconvolution_grid(
+        x_m, y_m, values, derivative_x, derivative_y, derivative_z_up,
+        structural_index=0.0,
+    )
+
+    assert result.success
+    assert result.structural_index == 0.0
+    assert result.base_level is None
+    assert result.x0_m == pytest.approx(x0, abs=1e-7)
+    assert result.y0_m == pytest.approx(y0, abs=1e-7)
+    assert result.z0_up_m == pytest.approx(z0, abs=1e-7)
+    assert result.rank == 3
+
+
 def test_euler_deconvolution_rejects_underdetermined_or_singular_windows():
     x = np.arange(3.0)
     y = np.arange(3.0)

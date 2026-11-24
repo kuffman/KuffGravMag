@@ -22,7 +22,14 @@ from engine.processing import (
     interpolate_profile,
     RegularProfile,
 )
-from engine.spectral import transform_profile
+from engine.spectral import (
+    estimate_spectral_depth,
+    stabilized_magnetic_transform_grid,
+    transform_grid,
+    transform_profile,
+)
+from engine.euler import euler_window_sweep
+from engine.processing import regular_grid_from_xyz
 
 COLOR_OPTIONS = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown']
 
@@ -423,7 +430,10 @@ def _render_m6_processing_panel():
             "Download raw data, outputs, and provenance (.zip)", data=bundle,
             file_name="KuffGravMag_Processing.zip", mime="application/zip", key="m6_bundle",
         )
-        st.caption("Terrain corrections and IGRF/main-field subtraction are not included.")
+        st.caption(
+            "DEM terrain residuals and IGRF-14 raw total-field corrections are available through the processing API. "
+            "This profile panel lacks station map coordinates, and its magnetic channel is already an anomaly."
+        )
 
 
 def _show_inversion_result(label, result):
@@ -496,7 +506,9 @@ if st.sidebar.button("🚀 Run Magnetic Inversion"):
 col_left, col_right = st.columns([1, 1.2])
 
 with col_left:
-    tab_model, tab_map = st.tabs(["Subsurface 2.5D Model", "3D Map Transect Slicer"])
+    tab_model, tab_map, tab_grid = st.tabs([
+        "Subsurface 2.5D Model", "3D Map Transect Slicer", "Grid Interpretation"
+    ])
 
     with tab_map:
         if data_import_type == "3D Grid Map Transect (XYZ)" and grid_spatial_data is not None:
@@ -540,6 +552,190 @@ with col_left:
             plt.close(fig_map)
         else:
             st.info("Upload a 3D XYZ Grid file in the sidebar to use the map slicer.")
+
+    with tab_grid:
+        if data_import_type != "3D Grid Map Transect (XYZ)" or grid_spatial_data is None:
+            st.info("Choose a regular XYZ grid in the sidebar to open the grid interpretation workflow.")
+        else:
+            gx, gy, gv = grid_spatial_data
+            grid_units_label = st.selectbox("Grid value units", ["nT", "mGal", "other input units"], key="grid_units")
+            grid_units = "input units" if grid_units_label == "other input units" else grid_units_label
+            grid_crs = st.text_input("Grid coordinate reference", "local projected grid (metres)", key="grid_crs")
+            try:
+                grid = regular_grid_from_xyz(
+                    gx, gy, gv, units=grid_units, coordinate_reference=grid_crs
+                )
+                st.caption(
+                    f"Complete grid: {grid.values.shape[1]} × {grid.values.shape[0]} cells · "
+                    f"spacing {grid.x_m[1]-grid.x_m[0]:g} × {grid.y_m[1]-grid.y_m[0]:g} m · {grid.coordinate_reference}"
+                )
+                fig_grid, ax_grid = plt.subplots(figsize=(6, 4.5))
+                mesh_grid = ax_grid.imshow(
+                    grid.values, origin="lower", aspect="equal",
+                    extent=(grid.x_m[0], grid.x_m[-1], grid.y_m[0], grid.y_m[-1]),
+                    cmap="RdBu_r",
+                )
+                fig_grid.colorbar(mesh_grid, ax=ax_grid, label=grid.units)
+                ax_grid.set_xlabel("X / easting (m)")
+                ax_grid.set_ylabel("Y / northing (m)")
+                ax_grid.set_title("Observed grid")
+                st.pyplot(fig_grid)
+                plt.close(fig_grid)
+
+                st.markdown("#### Spectral grid transforms")
+                output_name = st.selectbox(
+                    "Transform output",
+                    ["upward_continued", "derivative_x", "derivative_y", "vertical_derivative_down", "analytic_signal", "tilt_angle_deg"],
+                    format_func=lambda value: value.replace("_", " "),
+                    key="grid_transform_output",
+                )
+                grid_height = st.number_input("Upward continuation height (m)", min_value=0.0, value=0.0, key="grid_transform_height")
+                grid_padding = st.selectbox(
+                    "Spectral edge treatment", ["reflect", "none"],
+                    format_func=lambda value: "Reflect padding (review marked edges)" if value == "reflect" else "Periodic grid (wrap at boundaries)",
+                    key="grid_transform_padding",
+                )
+                if st.button("Calculate selected grid transform", key="grid_transform_run"):
+                    try:
+                        st.session_state.m61_grid_transform = transform_grid(
+                            grid.values,
+                            spacing_x_m=grid.x_m[1] - grid.x_m[0],
+                            spacing_y_m=grid.y_m[1] - grid.y_m[0],
+                            height_m=grid_height,
+                            padding=grid_padding,
+                            units=grid.units,
+                        )
+                        st.session_state.m61_grid_metadata = {
+                            "coordinate_reference": grid.coordinate_reference,
+                            "units": grid.units,
+                            "spacing_x_m": grid.x_m[1] - grid.x_m[0],
+                            "spacing_y_m": grid.y_m[1] - grid.y_m[0],
+                        }
+                    except Exception as exc:
+                        st.error(f"Grid transform failed: {exc}")
+                transform_result = st.session_state.get("m61_grid_transform")
+                if transform_result is not None:
+                    transformed = getattr(transform_result, output_name)
+                    fig_result, ax_result = plt.subplots(figsize=(6, 4))
+                    mesh_result = ax_result.imshow(
+                        transformed, origin="lower", aspect="equal",
+                        extent=(grid.x_m[0], grid.x_m[-1], grid.y_m[0], grid.y_m[-1]), cmap="RdBu_r",
+                    )
+                    fig_result.colorbar(mesh_result, ax=ax_result, label=transform_result.units[output_name])
+                    ax_result.set_title(output_name.replace("_", " "))
+                    ax_result.set_xlabel("X / easting (m)")
+                    ax_result.set_ylabel("Y / northing (m)")
+                    st.pyplot(fig_result)
+                    plt.close(fig_result)
+                    st.caption(
+                        f"Reflect edge-review widths: {transform_result.edge_effect_samples}. "
+                        + " ".join(transform_result.assumptions)
+                    )
+
+                with st.expander("Stabilized magnetic direction transform", expanded=False):
+                    direction_a, direction_b = st.columns(2)
+                    field_inc = direction_a.number_input("Field inclination (°)", -90.0, 90.0, float(spin_Inc), key="grid_field_inc")
+                    field_dec = direction_b.number_input("Field declination east (°)", -360.0, 360.0, float(spin_Dec), key="grid_field_dec")
+                    mag_inc = direction_a.number_input("Source magnetization inclination (°)", -90.0, 90.0, float(spin_Inc), key="grid_mag_inc")
+                    mag_dec = direction_b.number_input("Source magnetization declination east (°)", -360.0, 360.0, float(spin_Dec), key="grid_mag_dec")
+                    target_type = st.selectbox("Target", ["Pole (vertical)", "Equator (horizontal)"] , key="grid_target_type")
+                    regularization = st.number_input("Tikhonov regularization λ", min_value=0.000001, value=0.05, format="%.6g", key="grid_rtp_lambda")
+                    max_gain = st.number_input("Maximum allowed Fourier gain", min_value=0.1, value=20.0, format="%.4g", key="grid_rtp_gain")
+                    if st.button("Calculate regularized direction transform", key="grid_rtp_run"):
+                        try:
+                            target_inc = 90.0 if target_type == "Pole (vertical)" else 0.0
+                            result = stabilized_magnetic_transform_grid(
+                                grid.values,
+                                spacing_x_m=grid.x_m[1] - grid.x_m[0],
+                                spacing_y_m=grid.y_m[1] - grid.y_m[0],
+                                field_inclination_deg=field_inc,
+                                field_declination_deg=field_dec,
+                                magnetization_inclination_deg=mag_inc,
+                                magnetization_declination_deg=mag_dec,
+                                target_inclination_deg=target_inc,
+                                target_declination_deg=field_dec,
+                                regularization=regularization,
+                                padding=grid_padding,
+                                max_gain_limit=max_gain,
+                            )
+                            st.session_state.m61_magnetic_grid_transform = result
+                            st.success(
+                                f"Maximum gain {result.max_gain:.3g}; RMS gain {result.rms_gain:.3g}; "
+                                f"{result.fraction_gain_above_one:.1%} of frequencies amplify above unity."
+                            )
+                            st.caption(" ".join(result.assumptions))
+                            st.image(result.values, caption="Regularized magnetic transform", clamp=True)
+                        except Exception as exc:
+                            st.error(f"Magnetic direction transform failed: {exc}")
+
+                st.markdown("#### Euler window sweep")
+                euler_left, euler_right = st.columns(2)
+                window_size = euler_left.number_input("Window width (odd cells)", min_value=3, value=15, step=2, key="grid_euler_window")
+                stride = euler_right.number_input("Window stride (cells)", min_value=1, value=5, key="grid_euler_stride")
+                indices_text = st.text_input("Structural indices (comma-separated)", "1, 2, 3", key="grid_euler_indices")
+                condition_limit = st.number_input("Maximum Euler condition number", min_value=2.0, value=1e8, format="%.4g", key="grid_euler_condition")
+                rms_limit = st.number_input("Maximum Euler RMS residual (0 disables)", min_value=0.0, value=0.0, format="%.6g", key="grid_euler_rms")
+                if st.button("Run Euler window sweep", key="grid_euler_run"):
+                    try:
+                        derivatives = st.session_state.get("m61_grid_transform")
+                        if derivatives is None:
+                            derivatives = transform_grid(
+                                grid.values,
+                                spacing_x_m=grid.x_m[1] - grid.x_m[0],
+                                spacing_y_m=grid.y_m[1] - grid.y_m[0],
+                                padding=grid_padding,
+                                units=grid.units,
+                            )
+                            st.session_state.m61_grid_transform = derivatives
+                        indices = [float(item.strip()) for item in indices_text.split(",") if item.strip()]
+                        estimates = euler_window_sweep(
+                            grid.x_m, grid.y_m, grid.values,
+                            derivatives.derivative_x, derivatives.derivative_y,
+                            -derivatives.vertical_derivative_down,
+                            structural_indices=indices,
+                            window_size_samples=int(window_size), stride_samples=int(stride),
+                            condition_limit=condition_limit,
+                            max_rms_residual=rms_limit or None,
+                            mask=~derivatives.edge_mask,
+                        )
+                        accepted = [item for item in estimates if item.accepted]
+                        st.session_state.m61_euler_estimates = estimates
+                        st.write(f"{len(accepted)} of {len(estimates)} windows passed the selected index, condition, and RMS filters.")
+                        if accepted:
+                            st.dataframe(pd.DataFrame([
+                                {"x0_m": item.result.x0_m, "y0_m": item.result.y0_m,
+                                 "depth_m": item.result.depth_below_observation_m,
+                                 "structural_index": item.structural_index,
+                                 "condition": item.result.condition_number,
+                                 "rms": item.result.rms_residual,
+                                 "window_x_m": item.center_x_m, "window_y_m": item.center_y_m}
+                                for item in accepted
+                            ]), use_container_width=True)
+                        else:
+                            st.info("No windows passed; review grid derivatives, window width, structural indices, and filters.")
+                    except Exception as exc:
+                        st.error(f"Euler window sweep failed: {exc}")
+
+                st.markdown("#### Spectral depth estimate")
+                depth_a, depth_b, depth_c = st.columns(3)
+                depth_min = depth_a.number_input("Band minimum k (rad/m)", min_value=0.000001, value=0.005, format="%.6g", key="grid_depth_kmin")
+                depth_max = depth_b.number_input("Band maximum k (rad/m)", min_value=0.000002, value=0.05, format="%.6g", key="grid_depth_kmax")
+                depth_bins = depth_c.number_input("Radial bins", min_value=4, max_value=256, value=24, key="grid_depth_bins")
+                if st.button("Estimate band-limited source depth", key="grid_depth_run"):
+                    try:
+                        depth = estimate_spectral_depth(
+                            grid.values,
+                            spacing_x_m=grid.x_m[1] - grid.x_m[0],
+                            spacing_y_m=grid.y_m[1] - grid.y_m[0],
+                            wavenumber_band_rad_per_m=(depth_min, depth_max),
+                            radial_bin_count=int(depth_bins),
+                        )
+                        st.metric("Spectral depth", f"{depth.depth_m:.4g} m", f"± {depth.standard_error_m:.3g} m (linear-fit 1σ)")
+                        st.caption(f"R²={depth.r_squared:.4f}; {depth.bin_count} bins. " + " ".join(depth.assumptions))
+                    except Exception as exc:
+                        st.error(f"Spectral depth estimate failed: {exc}")
+            except Exception as exc:
+                st.warning(f"Grid interpretation needs a complete, uniformly spaced rectangular XYZ grid: {exc}")
 
     with tab_model:
         fig_mod, ax_mod = plt.subplots(figsize=(6, 5))

@@ -14,8 +14,11 @@ a = Analysis(
     ['app.py'],
     pathex=[],
     binaries=[],
-    datas=[('assets', 'assets')],
-    hiddenimports=['engine.forward', 'engine.inversion', 'engine.report', 'engine.grid', 'reportlab', 'scipy'],
+    datas=[('assets', 'assets'), ('engine/data/IGRF14.shc', 'engine/data')],
+    hiddenimports=[
+        'engine.forward', 'engine.inversion', 'engine.report', 'engine.grid',
+        'engine.igrf', 'engine.terrain', 'ui.grid_interpretation', 'reportlab', 'scipy',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

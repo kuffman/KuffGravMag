@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from engine.forward import Body2D, PotentialField2D
+from validation.analytical import rectangular_prism_gravity_gz_mgal
 
 
 G = 6.67430e-11
@@ -26,26 +27,6 @@ def _rect_body(*, strike=(-300.0, 500.0), density=500.0, susceptibility=0.0,
         D_r=remanent_dec, y_min=strike[0], y_max=strike[1],
         strike_mode=strike_mode,
     )
-
-
-def _box_gravity_analytical(x_bounds, y_bounds, z_bounds, density, observation):
-    """Nagy rectangular-prism corner sum in positive-down coordinates."""
-    xo, yo, zo = observation
-
-    def primitive(x, y, z):
-        r = math.sqrt(x * x + y * y + z * z)
-        return (x * math.log(y + r) + y * math.log(x + r)
-                - z * math.atan2(x * y, z * r))
-
-    corner_sum = 0.0
-    for ix, x_src in enumerate(x_bounds):
-        for iy, y_src in enumerate(y_bounds):
-            for iz, z_src in enumerate(z_bounds):
-                # The derivative primitive uses source coordinates relative to the observer.
-                x, y, z = x_src - xo, y_src - yo, z_src - zo
-                sign = (-1.0) ** ((1 - ix) + (1 - iy) + (1 - iz))
-                corner_sum += sign * primitive(x, y, z)
-    return -G * density * corner_sum * 1e5
 
 
 def _box_volume_integral(x_bounds, y_bounds, z_bounds, density, magnetization,
@@ -93,7 +74,7 @@ def _magnetization_from_parameters(body, F_nT, I_f, D_f, alpha):
 def test_finite_gravity_matches_prism_analytical_and_independent_volume_integral():
     body = _rect_body()
     observation = (25.0, 0.0, 0.0)
-    expected_analytic = _box_gravity_analytical(
+    expected_analytic = rectangular_prism_gravity_gz_mgal(
         (-100.0, 100.0), (-300.0, 500.0), (200.0, 400.0), 500.0, observation
     )
     expected_numeric, _ = _box_volume_integral(
