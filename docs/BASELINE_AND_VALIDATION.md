@@ -46,4 +46,4 @@ Use `uv sync --locked --all-groups` to install the web, desktop, build, and deve
 
 The suite's closed-form rectangle tolerance is `1e-6` relative. The rectangle, winding, symmetry, superposition, depth/elevation, and geometry regressions were written before the kernel edit. The nonrectangular triangle area-quadrature check and explicit infinite-bound equivalence check were added afterward as additional cross-checks. The triangle uses 64-point-per-axis Gaussian quadrature with `2e-6` relative tolerance. Symmetry, superposition, translation, and winding comparisons use `1e-12` relative/absolute tolerances where appropriate.
 
-Only the core test group was installed for these checks. The desktop and web interfaces were not launched, and the Windows packaging workflow was not run locally.
+All locked dependency groups were installed and the lock check passed. The regression suite was run in that environment. The desktop and web interfaces were not launched, and the Windows packaging workflow was not run locally.
