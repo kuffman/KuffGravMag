@@ -1,7 +1,10 @@
 """Versioned JSON project persistence for KuffGravMag model inputs."""
 
+import hashlib
 import json
 import math
+import os
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -90,7 +93,7 @@ def project_to_dict(
 
 
 def save_project(filename, bodies, field_params, observations=None, *, survey_profile=None, processing_steps=None):
-    """Write a project JSON file with no non-standard NaN/Infinity tokens."""
+    """Atomically write a project JSON file with no non-standard NaN/Infinity tokens."""
     payload = project_to_dict(
         bodies,
         field_params,
@@ -99,8 +102,49 @@ def save_project(filename, bodies, field_params, observations=None, *, survey_pr
         processing_steps=processing_steps,
     )
     path = Path(filename)
-    path.write_text(json.dumps(payload, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    contents = json.dumps(payload, indent=2, allow_nan=False) + "\n"
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+            delete=False,
+        ) as temporary:
+            temporary_path = Path(temporary.name)
+            temporary.write(contents)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_path, path)
+    except Exception:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
     return path
+
+
+def project_sha256(
+    bodies, field_params, observations=None, *, survey_profile=None, processing_steps=None
+):
+    """Return a stable SHA-256 fingerprint of the canonical project inputs."""
+    payload = project_to_dict(
+        bodies,
+        field_params,
+        observations,
+        survey_profile=survey_profile,
+        processing_steps=processing_steps,
+    )
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
 
 
 def _read_source(source):

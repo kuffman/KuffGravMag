@@ -3,6 +3,7 @@
 import os
 import platform
 import sys
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -14,15 +15,18 @@ from PyQt6.QtCore import QLibraryInfo, QTimer
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from app import MainWindow
+from engine.project import load_project
 from ui.grid_interpretation import GridInterpretationDialog
 
 
 def main():
     app = QApplication.instance() or QApplication([])
+    app.setOrganizationName("KuffGravMag")
+    app.setApplicationName("KuffGravMag Studio")
     # Keep unexpected warning dialogs from blocking the headless smoke run.
     QMessageBox.warning = staticmethod(lambda *args, **kwargs: None)
     QMessageBox.critical = staticmethod(lambda *args, **kwargs: None)
-    window = MainWindow()
+    window = MainWindow(enable_recovery=False)
     window.show()
     app.processEvents()
 
@@ -30,6 +34,22 @@ def main():
         raise RuntimeError("The desktop main window did not become visible")
     if not hasattr(window, "canvas"):
         raise RuntimeError("The desktop plot canvas was not initialized")
+    if not hasattr(window, "studio_workspace") or window.studio_workspace.tree.topLevelItemCount() != 1:
+        raise RuntimeError("The Studio project explorer was not initialized")
+    if window.analysis_tabs.count() != 2 or window.prism_view.finite_body_count != 2:
+        raise RuntimeError("The 3D finite-prism model view was not initialized")
+
+    window.obs_gz = np.linspace(-0.2, 0.3, window.x_obs.size)
+    window.refresh_project_explorer()
+    if not window.studio_workspace.buttons["invert_gravity"].isEnabled():
+        raise RuntimeError("The gravity inversion workflow did not enable for observed data")
+    with tempfile.TemporaryDirectory(prefix="kgm-studio-smoke-") as temp_dir:
+        project_path = Path(temp_dir) / "workflow.kgm.json"
+        window._save_project_to_path(project_path)
+        saved = load_project(project_path)
+        if len(saved["bodies"]) != len(window.bodies):
+            raise RuntimeError("The Studio project save did not preserve the model")
+        np.testing.assert_array_equal(saved["observations"]["gravity"], window.obs_gz)
 
     n = 64
     spacing = 10.0

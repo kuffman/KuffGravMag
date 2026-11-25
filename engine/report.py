@@ -6,8 +6,21 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from engine.forward import resolve_strike_mode
 from engine.model_status import model_status_lines
+from engine.project import project_sha256
+import json
 
-def generate_pdf_report(filename, figure_path, bodies, field_params):
+
+def generate_pdf_report(
+    filename,
+    figure_path,
+    bodies,
+    field_params,
+    *,
+    observations=None,
+    survey_profile=None,
+    processing_steps=None,
+    project_name="Unsaved project",
+):
     """
     Generates an executive geophysical modeling report PDF.
     """
@@ -104,5 +117,33 @@ def generate_pdf_report(filename, figure_path, bodies, field_params):
     story.append(Spacer(1, 8))
     if os.path.exists(figure_path):
         story.append(Image(figure_path, width=520, height=390))
+
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("4. Project Provenance", heading2))
+    project_hash = project_sha256(
+        bodies,
+        field_params,
+        observations,
+        survey_profile=survey_profile,
+        processing_steps=processing_steps,
+    )
+    observation_count = 0
+    if observations:
+        values = observations.get("x")
+        if values is not None:
+            observation_count = len(values)
+    survey_count = 0 if survey_profile is None else len(survey_profile.distance_m)
+    provenance = [
+        f"Project: {escape(str(project_name))}",
+        f"Canonical input snapshot SHA-256: {project_hash}",
+        f"Observed profile stations: {observation_count}",
+        f"Versioned survey stations: {survey_count}",
+        f"Recorded processing steps: {len(processing_steps or ())}",
+    ]
+    for line in provenance:
+        story.append(Paragraph(line, subtitle_style))
+    for step in processing_steps or ():
+        step_json = json.dumps(step, sort_keys=True, ensure_ascii=False, allow_nan=False)
+        story.append(Paragraph(escape(step_json), vertex_style))
 
     doc.build(story)

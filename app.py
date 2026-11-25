@@ -1,16 +1,20 @@
 import sys
 import csv
+import hashlib
 import os
 import tempfile
+from pathlib import Path
 import numpy as np
+from PyQt6.QtCore import QStandardPaths, Qt, QTimer
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QFormLayout, QDoubleSpinBox, QPushButton, QGroupBox, QListWidget,
     QComboBox, QLabel, QFileDialog, QMessageBox, QDialog, QCheckBox,
-    QLineEdit, QSpinBox, QTextEdit, QDialogButtonBox, QGridLayout
+    QLineEdit, QSpinBox, QTextEdit, QDialogButtonBox, QGridLayout,
+    QDockWidget, QTabWidget,
 )
 from PyQt6.QtGui import QAction
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT
 from matplotlib.figure import Figure
 from scipy.interpolate import griddata
 
@@ -29,6 +33,15 @@ from engine.processing import (
 )
 from engine.spectral import transform_profile
 from ui.grid_interpretation import GridInterpretationDialog
+from ui.prism_view import FinitePrismView
+from ui.project_recovery import (
+    clear_recovery_snapshot,
+    load_recovery_snapshot,
+    recovery_is_newer,
+    save_recovery_snapshot,
+)
+from ui.studio_workspace import StudioWorkspace
+from ui.studio_workflow import prepare_model_observations
 
 COLOR_OPTIONS = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown']
 
@@ -104,6 +117,7 @@ class SurveyProcessingDialog(QDialog):
         self.base_station = None
         self.products = []
         self.regular_profiles = []
+        self.model_inputs = []
 
         root = QVBoxLayout(self)
         form = QFormLayout()
@@ -193,6 +207,18 @@ class SurveyProcessingDialog(QDialog):
             operations.addWidget(button, index // 3, index % 3)
         root.addLayout(operations)
 
+        handoff_group = QGroupBox("Model handoff")
+        handoff_layout = QVBoxLayout(handoff_group)
+        self.model_input_combo = QComboBox()
+        self.model_input_combo.addItem("Keep current model observations", None)
+        handoff_layout.addWidget(self.model_input_combo)
+        handoff_note = QLabel(
+            "Only declared polynomial residuals are offered. Selecting one transfers its finite stations to the model and inversion views."
+        )
+        handoff_note.setWordWrap(True)
+        handoff_layout.addWidget(handoff_note)
+        root.addWidget(handoff_group)
+
         self.preview_figure = Figure(figsize=(7, 2.4), dpi=100)
         self.preview_canvas = FigureCanvas(self.preview_figure)
         root.addWidget(self.preview_canvas)
@@ -242,6 +268,9 @@ class SurveyProcessingDialog(QDialog):
             self.profile = SurveyProfile.from_csv(path, metadata=metadata)
             self.products.clear()
             self.regular_profiles.clear()
+            self.model_inputs.clear()
+            self.model_input_combo.clear()
+            self.model_input_combo.addItem("Keep current model observations", None)
             channels = []
             if self.profile.gravity_mgal is not None:
                 channels.append(("Gravity (mGal)", "gravity"))
@@ -309,10 +338,27 @@ class SurveyProcessingDialog(QDialog):
                 self.profile.distance_m, values, degree=self.degree.value(), units=units
             )
             self.products.append(product)
+            channel = str(self.channel.currentData())
+            residual_name = next(name for name in product.columns if name.startswith("residual_"))
+            self.model_inputs.append({
+                "channel": channel,
+                "source_column": residual_name,
+                "values": product.columns[residual_name],
+                "units": product.units[residual_name],
+                "label": f"{channel.title()} residual · degree {self.degree.value()}",
+            })
+            self.model_input_combo.addItem(self.model_inputs[-1]["label"], len(self.model_inputs) - 1)
+            self.model_input_combo.setCurrentIndex(self.model_input_combo.count() - 1)
             self._log(f"Fit degree-{self.degree.value()} regional and residual.\n" + "\n".join(product.assumptions))
             self._refresh_plot()
         except Exception as exc:
             QMessageBox.warning(self, "Regional separation error", str(exc))
+
+    def selected_model_input(self):
+        selected = self.model_input_combo.currentData()
+        if selected is None or selected < 0 or selected >= len(self.model_inputs):
+            return None
+        return self.model_inputs[int(selected)]
 
     def resample(self):
         try:
@@ -417,10 +463,38 @@ class SurveyProcessingDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    def __init__(self, *, recovery_path=None, enable_recovery=True):
         super().__init__()
-        self.setWindowTitle("KuffGravMag — 2.5D Potential Field Workbench & Inversion")
-        self.resize(1350, 920)
+        self.setWindowTitle("KuffGravMag Studio — Potential Field Workbench")
+        self.resize(1580, 980)
+        self.setStyleSheet("""
+            QMainWindow { background: #f4f7fb; }
+            QDockWidget::title { background: #e8edf5; padding: 7px; font-weight: 600; }
+            QGroupBox { border: 1px solid #d6deea; border-radius: 6px; margin-top: 9px; padding: 8px; }
+            QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; color: #24466f; }
+            QPushButton { padding: 6px 8px; border: 1px solid #c8d3e2; border-radius: 4px; background: #ffffff; }
+            QPushButton:hover { background: #eaf2fc; border-color: #7898bd; }
+            QTabBar::tab { padding: 8px 14px; }
+            QTreeWidget { border: 1px solid #d6deea; border-radius: 4px; background: #ffffff; }
+        """)
+        self._initializing = True
+        self._loading_project = False
+        self.project_path = None
+        self.project_dirty = False
+        self.grid_source_path = None
+        self._recovery_enabled = bool(enable_recovery)
+        if recovery_path is None:
+            data_location = QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.AppLocalDataLocation
+            )
+            if not data_location:
+                data_location = str(Path(tempfile.gettempdir()) / "KuffGravMag-Studio")
+            recovery_path = Path(data_location) / "recovery.kgm.json"
+        self._recovery_file = Path(recovery_path)
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.setInterval(1200)
+        self._autosave_timer.timeout.connect(self._write_recovery_snapshot)
 
         self.x_obs = np.linspace(-1000, 1000, 250)
         self.z_obs = np.zeros_like(self.x_obs)
@@ -624,7 +698,31 @@ class MainWindow(QMainWindow):
         # Right Panel: Plot Canvas
         self.figure = Figure(figsize=(8, 7), dpi=100)
         self.canvas = FigureCanvas(self.figure)
-        main_layout.addWidget(self.canvas, stretch=3)
+        self.canvas.setObjectName("profilePlotCanvas")
+        self.analysis_tabs = QTabWidget()
+        self.analysis_tabs.setObjectName("analysisWorkspaceTabs")
+        self.analysis_tabs.setDocumentMode(True)
+        profile_page = QWidget()
+        profile_layout = QVBoxLayout(profile_page)
+        profile_layout.setContentsMargins(4, 4, 4, 4)
+        self.profile_toolbar = NavigationToolbar2QT(self.canvas, profile_page)
+        profile_layout.addWidget(self.profile_toolbar)
+        profile_layout.addWidget(self.canvas, stretch=1)
+        self.analysis_tabs.addTab(profile_page, "Profiles and 2D section")
+        self.prism_view = FinitePrismView(self)
+        self.analysis_tabs.addTab(self.prism_view, "3D finite-prism view")
+        main_layout.addWidget(self.analysis_tabs, stretch=3)
+
+        self.studio_workspace = StudioWorkspace(self)
+        self.studio_workspace.action_requested.connect(self._handle_studio_action)
+        self.studio_workspace.item_activated.connect(self._activate_project_item)
+        self.project_dock = QDockWidget("Project Explorer", self)
+        self.project_dock.setObjectName("projectExplorerDock")
+        self.project_dock.setWidget(self.studio_workspace)
+        self.project_dock.setMinimumWidth(250)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.project_dock)
+        self.resizeDocks([self.project_dock], [285], Qt.Orientation.Horizontal)
+        self.menuBar().addMenu("View").addAction(self.project_dock.toggleViewAction())
 
         self.ax_grav = self.figure.add_subplot(311)
         self.ax_mag = self.figure.add_subplot(312)
@@ -637,18 +735,23 @@ class MainWindow(QMainWindow):
 
         self.refresh_body_list()
         self.recalculate_and_plot()
+        self._initializing = False
+        self.refresh_project_explorer()
+        self.statusBar().showMessage("Ready — project recovery is enabled" if self._recovery_enabled else "Ready")
+        if self._recovery_enabled:
+            QTimer.singleShot(0, self._offer_recovery)
 
     def create_menu_bar(self):
         menubar = self.menuBar()
         file_menu = menubar.addMenu("File")
 
-        save_project_action = QAction("Save Project…", self)
-        save_project_action.triggered.connect(self.save_project)
-        file_menu.addAction(save_project_action)
+        self.save_project_action = QAction("Save Project…", self)
+        self.save_project_action.triggered.connect(self.save_project)
+        file_menu.addAction(self.save_project_action)
 
-        load_project_action = QAction("Load Project…", self)
-        load_project_action.triggered.connect(self.load_project)
-        file_menu.addAction(load_project_action)
+        self.load_project_action = QAction("Load Project…", self)
+        self.load_project_action.triggered.connect(self.load_project)
+        file_menu.addAction(self.load_project_action)
 
         file_menu.addSeparator()
 
@@ -656,32 +759,227 @@ class MainWindow(QMainWindow):
         import_grid_action.triggered.connect(self.import_3d_grid_csv)
         file_menu.addAction(import_grid_action)
 
-        interpret_grid_action = QAction("Interpret Regular 3D Grid (XYZ)…", self)
-        interpret_grid_action.triggered.connect(self.open_grid_interpretation)
-        file_menu.addAction(interpret_grid_action)
+        self.interpret_grid_action = QAction("Interpret Regular 3D Grid (XYZ)…", self)
+        self.interpret_grid_action.triggered.connect(self.open_grid_interpretation)
+        file_menu.addAction(self.interpret_grid_action)
 
-        import_obs_action = QAction("Import 2D Observed Line (CSV)", self)
-        import_obs_action.triggered.connect(self.import_observed_csv)
-        file_menu.addAction(import_obs_action)
+        self.import_obs_action = QAction("Import 2D Observed Line (CSV)", self)
+        self.import_obs_action.triggered.connect(self.import_observed_csv)
+        file_menu.addAction(self.import_obs_action)
 
-        process_survey_action = QAction("Process Versioned Survey Profile…", self)
-        process_survey_action.triggered.connect(self.open_survey_processing)
-        file_menu.addAction(process_survey_action)
+        self.process_survey_action = QAction("Process Versioned Survey Profile…", self)
+        self.process_survey_action.triggered.connect(self.open_survey_processing)
+        file_menu.addAction(self.process_survey_action)
 
-        export_calc_action = QAction("Export Calculated Results (CSV)", self)
-        export_calc_action.triggered.connect(self.export_results_csv)
-        file_menu.addAction(export_calc_action)
+        self.export_calc_action = QAction("Export Calculated Results (CSV)", self)
+        self.export_calc_action.triggered.connect(self.export_results_csv)
+        file_menu.addAction(self.export_calc_action)
 
         file_menu.addSeparator()
 
-        pdf_report_action = QAction("Generate Executive PDF Report", self)
-        pdf_report_action.triggered.connect(self.generate_pdf)
-        file_menu.addAction(pdf_report_action)
+        self.pdf_report_action = QAction("Generate Reproducible PDF Report", self)
+        self.pdf_report_action.triggered.connect(self.generate_pdf)
+        file_menu.addAction(self.pdf_report_action)
+
+        toolbar = self.addToolBar("Studio workflow")
+        toolbar.setObjectName("studioWorkflowToolbar")
+        toolbar.setMovable(False)
+        for action in (
+            self.save_project_action,
+            self.load_project_action,
+            self.import_obs_action,
+            self.process_survey_action,
+            self.interpret_grid_action,
+            self.export_calc_action,
+            self.pdf_report_action,
+        ):
+            toolbar.addAction(action)
+
+    def _handle_studio_action(self, action):
+        handlers = {
+            "import_observations": self.import_observed_csv,
+            "process_survey": self.open_survey_processing,
+            "interpret_grid": self.open_grid_interpretation,
+            "add_body": self.add_body,
+            "invert_gravity": lambda: self.run_inversion("gravity"),
+            "invert_magnetic": lambda: self.run_inversion("magnetics"),
+            "export_results": self.export_results_csv,
+            "generate_report": self.generate_pdf,
+        }
+        handler = handlers.get(action)
+        if handler is not None:
+            handler()
+
+    def _activate_project_item(self, item_key):
+        if isinstance(item_key, tuple) and len(item_key) == 2 and item_key[0] == "body":
+            index = int(item_key[1])
+            if 0 <= index < self.body_list.count():
+                self.body_list.setCurrentRow(index)
+                self.analysis_tabs.setCurrentIndex(0)
+            return
+        if item_key == "survey":
+            self.open_survey_processing()
+        elif item_key == "grid":
+            self.open_grid_interpretation()
+        elif item_key == "reports":
+            self.generate_pdf()
+
+    def refresh_project_explorer(self):
+        if not hasattr(self, "studio_workspace"):
+            return
+        observed = self.obs_gz if self.obs_gz is not None else self.obs_dT
+        observation_count = 0 if observed is None else int(len(observed))
+        inversion_ready = (
+            observed is not None
+            and observation_count >= 2
+            and bool(np.all(np.isfinite(observed)))
+        )
+        project_name = self.project_path.stem if self.project_path is not None else "Untitled project"
+        grid_name = Path(self.grid_source_path).name if self.grid_source_path is not None else None
+        self.studio_workspace.update_project(
+            project_name=project_name,
+            project_path=self.project_path,
+            dirty=self.project_dirty,
+            bodies=self.bodies,
+            active_body_index=self.active_body_idx,
+            survey_profile=self.survey_profile,
+            observation_count=observation_count,
+            inversion_ready=inversion_ready,
+            processing_steps=self.processing_steps,
+            grid_name=grid_name,
+        )
+
+    def _current_observations(self):
+        return {
+            "x": self.x_obs,
+            "z": self.z_obs,
+            "gravity": self.obs_gz,
+            "magnetic": self.obs_dT,
+        }
+
+    def _mark_project_dirty(self):
+        if self._initializing or self._loading_project:
+            return
+        self.project_dirty = True
+        self.refresh_project_explorer()
+        self.statusBar().showMessage("Unsaved changes — a recovery snapshot will be saved automatically")
+        if self._recovery_enabled:
+            self._autosave_timer.start()
+
+    def _mark_project_clean(self, *, clear_recovery=True):
+        self._autosave_timer.stop()
+        self.project_dirty = False
+        same_as_recovery = (
+            self.project_path is not None
+            and self.project_path.resolve() == self._recovery_file.resolve()
+        )
+        if clear_recovery and self._recovery_enabled and not same_as_recovery:
+            try:
+                clear_recovery_snapshot(self._recovery_file)
+            except OSError:
+                pass
+        self.refresh_project_explorer()
+        self.statusBar().showMessage("Project saved", 5000)
+
+    def _write_recovery_snapshot(self):
+        if not self._recovery_enabled or not self.project_dirty:
+            return False
+        try:
+            save_recovery_snapshot(
+                self._recovery_file,
+                self.bodies,
+                self.field_params(),
+                self._current_observations(),
+                survey_profile=self.survey_profile,
+                processing_steps=self.processing_steps,
+            )
+        except Exception as exc:
+            self.statusBar().showMessage(f"Recovery snapshot failed: {exc}")
+            return False
+        self.refresh_project_explorer()
+        self.statusBar().showMessage("Recovery snapshot saved", 5000)
+        return True
+
+    def _offer_recovery(self):
+        if not self._recovery_enabled or not recovery_is_newer(self._recovery_file, self.project_path):
+            return
+        answer = QMessageBox.question(
+            self,
+            "Recover previous session?",
+            "A newer recovery snapshot is available. Restore its model, observations, survey metadata, and processing history?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            try:
+                project = load_recovery_snapshot(self._recovery_file)
+                self._apply_project(project, project_path=None, recovered=True)
+            except Exception as exc:
+                QMessageBox.warning(self, "Recovery unavailable", f"Could not restore the recovery snapshot:\n{exc}")
+        else:
+            try:
+                clear_recovery_snapshot(self._recovery_file)
+            except OSError:
+                pass
+
+    def _apply_project(self, project, *, project_path, recovered=False):
+        if not project["bodies"]:
+            raise ValueError("Project has no bodies")
+        self._loading_project = True
+        try:
+            self.bodies = project["bodies"]
+            fields = project["field_params"]
+            for widget, key, default in (
+                (self.spin_F, "F", 48_000.0),
+                (self.spin_Inc, "Inc", 55.0),
+                (self.spin_Dec, "Dec", 0.0),
+                (self.spin_alpha, "Alpha", 0.0),
+            ):
+                widget.blockSignals(True)
+                widget.setValue(fields.get(key, default))
+                widget.blockSignals(False)
+            observations = project["observations"]
+            if observations["x"] is not None and observations["z"] is not None:
+                self.x_obs = observations["x"]
+                self.z_obs = observations["z"]
+            self.obs_gz = observations["gravity"]
+            self.obs_dT = observations["magnetic"]
+            self.survey_profile = project["survey_profile"]
+            self.processing_steps = project["processing_steps"]
+            self.processing_products = []
+            self.regular_profiles = []
+            self.grid_source_path = None
+            self.active_body_idx = 0
+            self.refresh_body_list()
+            self.recalculate_and_plot()
+        finally:
+            self._loading_project = False
+
+        self.project_path = None if recovered else Path(project_path)
+        self.project_dirty = bool(recovered)
+        if recovered:
+            self.statusBar().showMessage("Session recovered — save the project to keep it as a named file")
+            if self._recovery_enabled:
+                self._autosave_timer.start()
+        else:
+            self._mark_project_clean()
+        self.refresh_project_explorer()
 
     def open_survey_processing(self):
         dialog = SurveyProcessingDialog(self)
         if dialog.exec() != QDialog.DialogCode.Accepted or dialog.profile is None:
             return
+        selected_input = dialog.selected_model_input()
+        model_observations = None
+        handoff_record = None
+        if selected_input is not None:
+            model_observations, handoff_record = prepare_model_observations(
+                dialog.profile,
+                selected_input["channel"],
+                selected_input["values"],
+                source_column=selected_input["source_column"],
+                units=selected_input["units"],
+            )
         self.survey_profile = dialog.profile
         self.processing_products = list(dialog.products)
         self.regular_profiles = list(dialog.regular_profiles)
@@ -698,11 +996,20 @@ class MainWindow(QMainWindow):
                 for item in self.regular_profiles
             ]
         )
+        if model_observations is not None:
+            self.x_obs = model_observations["x"]
+            self.z_obs = model_observations["z"]
+            self.obs_gz = model_observations["gravity"]
+            self.obs_dT = model_observations["magnetic"]
+            self.processing_steps.append(handoff_record)
+            self.recalculate_and_plot()
+        self._mark_project_dirty()
         QMessageBox.information(
             self,
             "Survey processing saved",
             f"Saved {self.survey_profile.distance_m.size} raw survey stations and "
-            f"{len(self.processing_steps)} processing records in the project state.",
+            f"{len(self.processing_steps)} processing records in the project state."
+            + (" The selected regional residual is now active in the model and inversion views." if model_observations is not None else ""),
         )
 
     def run_inversion(self, field_type):
@@ -860,6 +1167,18 @@ class MainWindow(QMainWindow):
                 field_inclination_deg=self.spin_Inc.value(), field_declination_deg=self.spin_Dec.value(),
             )
             dialog.exec()
+            source = Path(file_path)
+            self.grid_source_path = source
+            self.processing_steps.append({
+                "name": "regular_grid_interpretation_source",
+                "parameters": {
+                    "source_name": source.name,
+                    "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "units": str(dialog.units.currentData()),
+                    "coordinate_reference": dialog.coordinate_reference.text().strip(),
+                },
+            })
+            self._mark_project_dirty()
         except Exception as exc:
             QMessageBox.critical(self, "Grid interpretation input error", str(exc))
 
@@ -923,7 +1242,16 @@ class MainWindow(QMainWindow):
             self.figure.savefig(temp_fig, dpi=300, bbox_inches='tight')
 
             # 3. Generate the actual PDF
-            generate_pdf_report(file_path, temp_fig, self.bodies, self.field_params())
+            generate_pdf_report(
+                file_path,
+                temp_fig,
+                self.bodies,
+                self.field_params(),
+                observations=self._current_observations(),
+                survey_profile=self.survey_profile,
+                processing_steps=self.processing_steps,
+                project_name=self.project_path.stem if self.project_path else "Unsaved project",
+            )
 
             # 4. Clean up the temporary image
             if os.path.exists(temp_fig):
@@ -949,24 +1277,25 @@ class MainWindow(QMainWindow):
         )
         if not file_path:
             return
-        observations = {
-            "x": self.x_obs,
-            "z": self.z_obs,
-            "gravity": self.obs_gz,
-            "magnetic": self.obs_dT,
-        }
         try:
-            write_project(
-                file_path,
-                self.bodies,
-                self.field_params(),
-                observations,
-                survey_profile=self.survey_profile,
-                processing_steps=self.processing_steps,
-            )
+            self._save_project_to_path(file_path)
             QMessageBox.information(self, "Project Saved", f"Saved project to {file_path}")
         except Exception as exc:
             QMessageBox.critical(self, "Project Save Error", f"Could not save project:\n{exc}")
+
+    def _save_project_to_path(self, file_path):
+        path = Path(file_path)
+        write_project(
+            path,
+            self.bodies,
+            self.field_params(),
+            self._current_observations(),
+            survey_profile=self.survey_profile,
+            processing_steps=self.processing_steps,
+        )
+        self.project_path = path
+        self._mark_project_clean()
+        return path
 
     def load_project(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -977,35 +1306,15 @@ class MainWindow(QMainWindow):
             return
         try:
             project = read_project(file_path)
-            if not project["bodies"]:
-                raise ValueError("Project has no bodies")
-            self.bodies = project["bodies"]
-            fields = project["field_params"]
-            for widget, key, default in (
-                (self.spin_F, "F", 48_000.0),
-                (self.spin_Inc, "Inc", 55.0),
-                (self.spin_Dec, "Dec", 0.0),
-                (self.spin_alpha, "Alpha", 0.0),
-            ):
-                widget.blockSignals(True)
-                widget.setValue(fields.get(key, default))
-                widget.blockSignals(False)
-            observations = project["observations"]
-            if observations["x"] is not None and observations["z"] is not None:
-                self.x_obs = observations["x"]
-                self.z_obs = observations["z"]
-            self.obs_gz = observations["gravity"]
-            self.obs_dT = observations["magnetic"]
-            self.survey_profile = project["survey_profile"]
-            self.processing_steps = project["processing_steps"]
-            self.processing_products = []
-            self.regular_profiles = []
-            self.active_body_idx = 0
-            self.refresh_body_list()
-            self.recalculate_and_plot()
+            self._apply_project(project, project_path=file_path)
             QMessageBox.information(self, "Project Loaded", f"Loaded project from {file_path}")
         except Exception as exc:
             QMessageBox.critical(self, "Project Load Error", f"Could not load project:\n{exc}")
+
+    def closeEvent(self, event):
+        if self.project_dirty and self._recovery_enabled:
+            self._write_recovery_snapshot()
+        event.accept()
 
     def refresh_body_list(self):
         self.body_list.blockSignals(True)
@@ -1021,6 +1330,9 @@ class MainWindow(QMainWindow):
         if 0 <= row < len(self.bodies):
             self.active_body_idx = row
             self.load_active_body_props()
+            if hasattr(self, "prism_view"):
+                self.prism_view.update_scene(self.bodies, self.active_body_idx)
+            QTimer.singleShot(0, self.refresh_project_explorer)
 
     def load_active_body_props(self):
         if not self.bodies or self.active_body_idx >= len(self.bodies): return
@@ -1095,6 +1407,7 @@ class MainWindow(QMainWindow):
             self.spin_Dec.value(), self.spin_alpha.value(),
         )
         self.plot_results(gz_total, dT_total)
+        self._mark_project_dirty()
 
     def plot_results(self, gz, dT):
         self.ax_grav.clear()
@@ -1173,10 +1486,14 @@ class MainWindow(QMainWindow):
         self.ax_body.grid(True)
         self.ax_body.legend(loc='lower right', fontsize='small')
         self.canvas.draw()
+        if hasattr(self, "prism_view"):
+            self.prism_view.update_scene(self.bodies, self.active_body_idx)
 
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    app.setOrganizationName("KuffGravMag")
+    app.setApplicationName("KuffGravMag Studio")
     if not app.screens():
         sys.stderr.write(
             "KuffGravMag could not find an active display. The Qt platform plugin "

@@ -1,6 +1,6 @@
-# KuffGravMag
+# KuffGravMag Studio
 
-KuffGravMag is a desktop and web workbench for gravity and magnetic profile modelling and processing. Infinite Strike kernels use validated 2D calculations; Finite Strike mode evaluates the actual extruded 3D polygonal prism with closed-form face integrals. The bounded inversion workflow and its synthetic reliability checks are documented separately; inversion solutions remain potentially non-unique.
+KuffGravMag Studio is a desktop and web workbench for gravity and magnetic survey processing, forward modelling, and inversion. Infinite Strike kernels use validated 2D calculations; Finite Strike mode evaluates the actual extruded 3D polygonal prism with closed-form face integrals. The bounded inversion workflow and its synthetic reliability checks are documented separately; inversion solutions remain potentially non-unique.
 
 ## Reproducible Python setup
 
@@ -46,11 +46,17 @@ The scientific suite covers infinite-strike gravity and magnetic references, fin
 
 The desktop File menu and web sidebar accept a versioned profile CSV with explicit distance, elevation, units, coordinate reference, azimuth, and elevation datum. Processing includes free-air and optional infinite Bouguer-slab reduction, base-station diurnal correction, polynomial regional/residual separation, linear interpolation, profile spectral transforms, and reproducible ZIP export. Grid transforms and conditioned Euler depth estimation are available through the scientific engine API. Input requirements, equations, sign conventions, edge effects, and omissions are in the [KGM-M6 processing guide](docs/KGM-M6_PROCESSING.md).
 
+## Studio workspace (KGM-M7)
+
+The desktop window adds a project explorer and guided actions for observed profiles, survey processing, grid interpretation, body editing, inversion, CSV export, and reporting. A selected polynomial residual can flow from survey processing into the model and inversion views, with missing stations filtered and the elevation sign recorded. The analysis tabs keep the draggable 2D cross-section and profile plots beside an interactive 3D view of finite-strike prisms. Project writes are atomic; a debounced recovery snapshot can restore models, observations, survey metadata, and processing history after an interrupted session. PDF reports include a canonical SHA-256 fingerprint of those project inputs.
+
+The explorer records a source filename and checksum for an inspected regular grid. Grid arrays are not embedded in project JSON yet, and a reopened project requires the original grid file to be selected again. Infinite-strike bodies stay in the 2D section because drawing them as finite prisms would misstate their extent.
+
 ## Scope and limitations
 
-The desktop, web, and PDF outputs distinguish benchmarked Infinite Strike 2D kernels from validated Finite Strike prism integrals. The interfaces expose field intensity, inclination, declination, profile azimuth, remanent orientation, strike mode, and strike bounds. Project JSON schema version 2 preserves model settings, observations, optional raw survey data, and processing-step manifests; earlier project versions remain loadable. PDF reports include field settings, body properties, strike mode, bounds, and vertices. Finite magnetics assumes uniform magnetization and no self-demagnetization. Inversion uncertainty is a local approximation, and different body properties or depths can explain similar potential-field data.
+The desktop, web, and PDF outputs distinguish benchmarked Infinite Strike 2D kernels from validated Finite Strike prism integrals. The interfaces expose field intensity, inclination, declination, profile azimuth, remanent orientation, strike mode, and strike bounds. Project JSON schema version 2 preserves model settings, observations, optional raw survey data, and processing-step manifests; earlier project versions remain loadable. PDF reports include field settings, body properties, strike mode, bounds, vertices, processing records, and the canonical input fingerprint. Finite magnetics assumes uniform magnetization and no self-demagnetization. Inversion uncertainty is a local approximation, and different body properties or depths can explain similar potential-field data.
 
-Terrain corrections, IGRF/main-field removal, and stabilized low-latitude transformations are not implemented. The profile correction controls do not claim a complete free-air or Bouguer anomaly. Euler UI support and noisy multi-source window behavior are deferred; the conditioned core solver is available through Python and is tested against an analytic point-source field.
+Terrain correction, IGRF-14 evaluation, stabilized magnetic transforms, Euler window sweeps, spectral depth estimates, and regular-grid interpretation are available through the validated processing engine and grid tools. The legacy profile panel still lacks station map coordinates and its magnetic input is already an anomaly, so it does not apply terrain or main-field corrections to that channel. CRS conversion, basemaps, portable project bundles for spatial grids, 3D vertex editing, and desktop/web workflow parity remain deferred.
 
 GitHub Actions runs the locked scientific suite, optional Harmonica comparison, and reproducible report check on pull requests and branch pushes. The Windows packaging workflow also builds the application.
 
