@@ -1,6 +1,7 @@
 import sys
 import csv
 import hashlib
+import io
 import os
 import tempfile
 from pathlib import Path
@@ -11,7 +12,7 @@ from PyQt6.QtWidgets import (
     QFormLayout, QDoubleSpinBox, QPushButton, QGroupBox, QListWidget,
     QComboBox, QLabel, QFileDialog, QMessageBox, QDialog, QCheckBox,
     QLineEdit, QSpinBox, QTextEdit, QDialogButtonBox, QGridLayout,
-    QDockWidget, QTabWidget,
+    QDockWidget, QTabWidget, QInputDialog,
 )
 from PyQt6.QtGui import QAction
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas, NavigationToolbar2QT
@@ -22,7 +23,17 @@ from engine.forward import Body2D, PotentialField2D
 from engine.report import generate_pdf_report
 from engine.grid import extract_profile_from_xyz
 from engine.inversion import invert_body_parameters
-from engine.project import load_project as read_project, save_project as write_project
+from engine.project import (
+    load_project as read_project,
+    project_to_dict,
+    save_project as write_project,
+)
+from engine.project_bundle import (
+    MAX_ATTACHMENT_BYTES,
+    load_project_bundle,
+    save_project_bundle,
+)
+from engine.spatial import load_xyz_layer
 from engine.survey import SurveyProfile, BaseStationSeries, export_processing_bundle
 from engine.processing import (
     apply_gravity_reductions,
@@ -43,6 +54,7 @@ from ui.project_recovery import (
 from ui.studio_workspace import StudioWorkspace
 from ui.studio_workflow import prepare_model_observations
 from ui.academic_lab import AcademicLabDialog
+from ui.spatial_layer_dialog import SpatialLayerDialog
 
 COLOR_OPTIONS = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown']
 
@@ -483,6 +495,11 @@ class MainWindow(QMainWindow):
         self.project_path = None
         self.project_dirty = False
         self.grid_source_path = None
+        self.grid_source_name = None
+        self.grid_attachment_name = None
+        self.project_attachments = {}
+        self.spatial_layer = None
+        self.spatial_layer_attachment_name = None
         self._recovery_enabled = bool(enable_recovery)
         if recovery_path is None:
             data_location = QStandardPaths.writableLocation(
@@ -802,6 +819,7 @@ class MainWindow(QMainWindow):
             "process_survey": self.open_survey_processing,
             "interpret_grid": self.open_grid_interpretation,
             "academic_lab": self.open_academic_lab,
+            "load_spatial_layer": self.load_local_spatial_layer,
             "add_body": self.add_body,
             "invert_gravity": lambda: self.run_inversion("gravity"),
             "invert_magnetic": lambda: self.run_inversion("magnetics"),
@@ -823,6 +841,8 @@ class MainWindow(QMainWindow):
             self.open_survey_processing()
         elif item_key == "grid":
             self.open_grid_interpretation()
+        elif item_key == "spatial_layer":
+            self.open_local_spatial_layer()
         elif item_key == "reports":
             self.generate_pdf()
 
@@ -837,7 +857,11 @@ class MainWindow(QMainWindow):
             and bool(np.all(np.isfinite(observed)))
         )
         project_name = self.project_path.stem if self.project_path is not None else "Untitled project"
-        grid_name = Path(self.grid_source_path).name if self.grid_source_path is not None else None
+        grid_name = (
+            Path(self.grid_source_path).name
+            if self.grid_source_path is not None
+            else self.grid_source_name
+        )
         self.studio_workspace.update_project(
             project_name=project_name,
             project_path=self.project_path,
@@ -849,6 +873,7 @@ class MainWindow(QMainWindow):
             inversion_ready=inversion_ready,
             processing_steps=self.processing_steps,
             grid_name=grid_name,
+            spatial_layer_name=(self.spatial_layer.name if self.spatial_layer is not None else None),
         )
 
     def _current_observations(self):
@@ -858,6 +883,22 @@ class MainWindow(QMainWindow):
             "gravity": self.obs_gz,
             "magnetic": self.obs_dT,
         }
+
+    def _store_project_attachment(self, source_name, payload):
+        """Keep imported local bytes under a path-free, content-addressed name."""
+        if len(payload) > MAX_ATTACHMENT_BYTES:
+            raise ValueError("Portable project attachments are limited to 32 MiB each")
+        digest = hashlib.sha256(payload).hexdigest()
+        basename = Path(str(source_name)).name
+        safe_name = "".join(
+            character if character.isalnum() or character in "._-" else "_"
+            for character in basename
+        ).strip("._")[:100]
+        if not safe_name:
+            safe_name = "local-data.bin"
+        attachment_name = f"{digest[:12]}-{safe_name}"
+        self.project_attachments[attachment_name] = bytes(payload)
+        return attachment_name
 
     def _mark_project_dirty(self):
         if self._initializing or self._loading_project:
@@ -924,7 +965,7 @@ class MainWindow(QMainWindow):
             except OSError:
                 pass
 
-    def _apply_project(self, project, *, project_path, recovered=False):
+    def _apply_project(self, project, *, project_path, recovered=False, attachments=None):
         if not project["bodies"]:
             raise ValueError("Project has no bodies")
         self._loading_project = True
@@ -950,7 +991,35 @@ class MainWindow(QMainWindow):
             self.processing_steps = project["processing_steps"]
             self.processing_products = []
             self.regular_profiles = []
+            self.project_attachments = dict(attachments or {})
             self.grid_source_path = None
+            self.grid_source_name = None
+            self.grid_attachment_name = None
+            self.spatial_layer = None
+            self.spatial_layer_attachment_name = None
+            spatial_layer_restored = False
+            for step in reversed(self.processing_steps):
+                if not isinstance(step, dict):
+                    continue
+                parameters = step.get("parameters", {})
+                if not isinstance(parameters, dict):
+                    continue
+                if step.get("name") == "regular_grid_interpretation_source":
+                    self.grid_source_name = parameters.get("source_name")
+                    self.grid_attachment_name = parameters.get("attachment_name")
+                elif step.get("name") == "local_spatial_layer" and not spatial_layer_restored:
+                    attachment_name = parameters.get("attachment_name")
+                    raw = self.project_attachments.get(attachment_name)
+                    if raw is not None:
+                        self.spatial_layer = load_xyz_layer(
+                            raw,
+                            source_crs=parameters.get("source_crs", ""),
+                            target_crs=parameters.get("target_crs"),
+                            units=parameters.get("units", "input units"),
+                            name=parameters.get("source_name", attachment_name),
+                        )
+                        self.spatial_layer_attachment_name = attachment_name
+                        spatial_layer_restored = True
             self.active_body_idx = 0
             self.refresh_body_list()
             self.recalculate_and_plot()
@@ -1143,25 +1212,39 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Import Error", f"Could not process grid:\n{str(e)}")
 
     def open_grid_interpretation(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Interpret regular XYZ grid", "", "CSV / text grids (*.csv *.txt *.dat);;All files (*)"
-        )
-        if not file_path:
-            return
         try:
+            file_path = None
+            attachment_name = self.grid_attachment_name
+            if attachment_name and attachment_name in self.project_attachments:
+                payload = self.project_attachments[attachment_name]
+                source_name = self.grid_source_name or attachment_name
+            else:
+                file_path, _ = QFileDialog.getOpenFileName(
+                    self, "Interpret regular XYZ grid", "",
+                    "CSV / text grids (*.csv *.txt *.dat);;All files (*)"
+                )
+                if not file_path:
+                    return
+                source = Path(file_path)
+                if source.stat().st_size > MAX_ATTACHMENT_BYTES:
+                    raise ValueError("Portable grid attachments are limited to 32 MiB")
+                with source.open("rb") as stream:
+                    payload = stream.read(MAX_ATTACHMENT_BYTES + 1)
+                source_name = source.name
             x, y, values = [], [], []
-            with open(file_path, "r", encoding="utf-8-sig") as source:
-                for line in source:
-                    stripped = line.strip()
-                    if not stripped or stripped.startswith("#"):
-                        continue
-                    try:
-                        row = stripped.replace(",", " ").split()
-                        x.append(float(row[0]))
-                        y.append(float(row[1]))
-                        values.append(float(row[2]))
-                    except (ValueError, IndexError):
-                        continue
+            for line_number, line in enumerate(payload.decode("utf-8-sig").splitlines(), start=1):
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                try:
+                    row = stripped.replace(",", " ").split()
+                    x.append(float(row[0]))
+                    y.append(float(row[1]))
+                    values.append(float(row[2]))
+                except (ValueError, IndexError):
+                    if not x and not values:
+                        continue  # A single leading header row is accepted.
+                    raise ValueError(f"Grid row {line_number} is not a numeric XYZ record")
             if len(values) < 64:
                 raise ValueError("Regular grid interpretation needs at least 8 by 8 complete XYZ cells.")
             dialog = GridInterpretationDialog(
@@ -1169,13 +1252,16 @@ class MainWindow(QMainWindow):
                 field_inclination_deg=self.spin_Inc.value(), field_declination_deg=self.spin_Dec.value(),
             )
             dialog.exec()
-            source = Path(file_path)
-            self.grid_source_path = source
+            self.grid_source_path = Path(file_path) if file_path else None
+            self.grid_source_name = source_name
+            attachment_name = attachment_name or self._store_project_attachment(source_name, payload)
+            self.grid_attachment_name = attachment_name
             self.processing_steps.append({
                 "name": "regular_grid_interpretation_source",
                 "parameters": {
-                    "source_name": source.name,
-                    "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "source_name": source_name,
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "attachment_name": attachment_name,
                     "units": str(dialog.units.currentData()),
                     "coordinate_reference": dialog.coordinate_reference.text().strip(),
                 },
@@ -1188,29 +1274,115 @@ class MainWindow(QMainWindow):
         dialog = AcademicLabDialog(self)
         dialog.exec()
 
+    def load_local_spatial_layer(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load local XYZ spatial layer", "",
+            "XYZ / CSV layers (*.xyz *.csv *.txt);;All files (*)",
+        )
+        if not file_path:
+            return
+        try:
+            source = Path(file_path)
+            if source.stat().st_size > MAX_ATTACHMENT_BYTES:
+                raise ValueError("Portable spatial layer attachments are limited to 32 MiB")
+            with source.open("rb") as stream:
+                payload = stream.read(MAX_ATTACHMENT_BYTES + 1)
+            source_crs, accepted = QInputDialog.getText(
+                self,
+                "Spatial layer source CRS",
+                "Enter the source CRS (for example EPSG:32630):",
+            )
+            if not accepted:
+                return
+            target_crs, accepted = QInputDialog.getText(
+                self,
+                "Spatial layer project CRS",
+                "Enter the target CRS (use the source CRS to keep coordinates unchanged):",
+                text=source_crs,
+            )
+            if not accepted:
+                return
+            units, accepted = QInputDialog.getText(
+                self,
+                "Spatial layer value units",
+                "Enter the value units (for example mGal or nT):",
+                text="input units",
+            )
+            if not accepted:
+                return
+            layer = load_xyz_layer(
+                payload,
+                source_crs=source_crs,
+                target_crs=target_crs,
+                units=units,
+                name=Path(file_path).name,
+            )
+            attachment_name = self._store_project_attachment(Path(file_path).name, payload)
+            self.spatial_layer = layer
+            self.spatial_layer_attachment_name = attachment_name
+            self.processing_steps.append({
+                "name": "local_spatial_layer",
+                "parameters": {
+                    "source_name": layer.name,
+                    "attachment_name": attachment_name,
+                    "source_sha256": layer.source_sha256,
+                    "source_crs": layer.source_crs,
+                    "target_crs": layer.target_crs,
+                    "units": layer.units,
+                    "point_count": int(layer.x.size),
+                    "local_only": True,
+                },
+            })
+            self._mark_project_dirty()
+            self.open_local_spatial_layer()
+        except Exception as exc:
+            QMessageBox.warning(self, "Spatial layer import error", str(exc))
+
+    def open_local_spatial_layer(self):
+        if self.spatial_layer is None:
+            QMessageBox.information(self, "Local spatial layer", "Load a local XYZ layer first.")
+            return
+        dialog = SpatialLayerDialog(self, self.spatial_layer)
+        dialog.exec()
+
     def import_observed_csv(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Import Observed Profile", "",
                                                    "CSV Files (*.csv);;Text Files (*.txt)")
         if not file_path: return
         try:
+            source = Path(file_path)
+            if source.stat().st_size > MAX_ATTACHMENT_BYTES:
+                raise ValueError("Portable observation attachments are limited to 32 MiB")
+            with source.open("rb") as stream:
+                payload = stream.read(MAX_ATTACHMENT_BYTES + 1)
             x_vals, gz_vals, dT_vals, z_vals = [], [], [], []
-            with open(file_path, 'r') as f:
-                reader = csv.reader(f)
-                for row in reader:
-                    if not row or row[0].startswith('#'): continue
-                    try:
-                        nums = [float(val) for val in row]
-                    except ValueError:
-                        continue  # Safely skip headers or malformed text rows
+            reader = csv.reader(io.StringIO(payload.decode("utf-8-sig")))
+            for row in reader:
+                if not row or row[0].startswith('#'): continue
+                try:
+                    nums = [float(val) for val in row]
+                except ValueError:
+                    continue  # Safely skip headers or malformed text rows
 
-                    x_vals.append(nums[0])
-                    gz_vals.append(nums[1] if len(nums) > 1 else 0.0)
-                    dT_vals.append(nums[2] if len(nums) > 2 else 0.0)
-                    z_vals.append(nums[3] if len(nums) > 3 else 0.0)
+                x_vals.append(nums[0])
+                gz_vals.append(nums[1] if len(nums) > 1 else 0.0)
+                dT_vals.append(nums[2] if len(nums) > 2 else 0.0)
+                z_vals.append(nums[3] if len(nums) > 3 else 0.0)
             self.x_obs = np.array(x_vals, dtype=float)
             self.z_obs = np.array(z_vals, dtype=float) if z_vals and any(z_vals) else np.zeros_like(self.x_obs)
             self.obs_gz = np.array(gz_vals, dtype=float) if len(gz_vals) == len(self.x_obs) else None
             self.obs_dT = np.array(dT_vals, dtype=float) if len(dT_vals) == len(self.x_obs) else None
+            attachment_name = self._store_project_attachment(source.name, payload)
+            self.processing_steps.append({
+                "name": "observed_profile_import",
+                "parameters": {
+                    "source_name": source.name,
+                    "attachment_name": attachment_name,
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "columns": ["distance_m", "gravity_mgal", "magnetic_nT", "elevation_m"],
+                    "local_only": True,
+                },
+            })
             self.recalculate_and_plot()
             QMessageBox.information(self, "Success", f"Loaded profile with {len(self.x_obs)} points.")
         except Exception as e:
@@ -1278,8 +1450,8 @@ class MainWindow(QMainWindow):
 
     def save_project(self):
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save KuffGravMag Project", "KuffGravMag_Project.json",
-            "KuffGravMag project (*.json)",
+            self, "Save KuffGravMag Project", "KuffGravMag_Project.kgmproj",
+            "Portable KuffGravMag project (*.kgmproj);;JSON project (*.json)",
         )
         if not file_path:
             return
@@ -1291,14 +1463,24 @@ class MainWindow(QMainWindow):
 
     def _save_project_to_path(self, file_path):
         path = Path(file_path)
-        write_project(
-            path,
+        project_data = project_to_dict(
             self.bodies,
             self.field_params(),
             self._current_observations(),
             survey_profile=self.survey_profile,
             processing_steps=self.processing_steps,
         )
+        if path.suffix.lower() == ".kgmproj":
+            save_project_bundle(path, project_data, self.project_attachments)
+        else:
+            write_project(
+                path,
+                self.bodies,
+                self.field_params(),
+                self._current_observations(),
+                survey_profile=self.survey_profile,
+                processing_steps=self.processing_steps,
+            )
         self.project_path = path
         self._mark_project_clean()
         return path
@@ -1306,13 +1488,19 @@ class MainWindow(QMainWindow):
     def load_project(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Load KuffGravMag Project", "KuffGravMag_Project.json",
-            "KuffGravMag project (*.json)",
+            "KuffGravMag projects (*.kgmproj *.json)",
         )
         if not file_path:
             return
         try:
-            project = read_project(file_path)
-            self._apply_project(project, project_path=file_path)
+            if Path(file_path).suffix.lower() == ".kgmproj":
+                bundle = load_project_bundle(file_path)
+                project = bundle["project"]
+                attachments = bundle["attachments"]
+            else:
+                project = read_project(file_path)
+                attachments = {}
+            self._apply_project(project, project_path=file_path, attachments=attachments)
             QMessageBox.information(self, "Project Loaded", f"Loaded project from {file_path}")
         except Exception as exc:
             QMessageBox.critical(self, "Project Load Error", f"Could not load project:\n{exc}")
@@ -1336,8 +1524,7 @@ class MainWindow(QMainWindow):
         if 0 <= row < len(self.bodies):
             self.active_body_idx = row
             self.load_active_body_props()
-            if hasattr(self, "prism_view"):
-                self.prism_view.update_scene(self.bodies, self.active_body_idx)
+            self.recalculate_and_plot(mark_dirty=False)
             QTimer.singleShot(0, self.refresh_project_explorer)
 
     def load_active_body_props(self):
@@ -1405,7 +1592,7 @@ class MainWindow(QMainWindow):
     def on_param_changed(self):
         self.recalculate_and_plot()
 
-    def recalculate_and_plot(self):
+    def recalculate_and_plot(self, *, mark_dirty=True):
         engine = PotentialField2D(self.bodies)
         gz_total = engine.calculate_gravity(self.x_obs, self.z_obs)
         _, _, _, dT_total = engine.calculate_magnetics_components(
@@ -1413,7 +1600,8 @@ class MainWindow(QMainWindow):
             self.spin_Dec.value(), self.spin_alpha.value(),
         )
         self.plot_results(gz_total, dT_total)
-        self._mark_project_dirty()
+        if mark_dirty:
+            self._mark_project_dirty()
 
     def plot_results(self, gz, dT):
         self.ax_grav.clear()

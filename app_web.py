@@ -1,3 +1,4 @@
+import io
 import os
 import tempfile
 import json
@@ -5,6 +6,7 @@ import hashlib
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 import streamlit as st
 from scipy.interpolate import griddata
 
@@ -22,6 +24,12 @@ from engine.inversion import invert_body_parameters
 from engine.grid import extract_profile_from_xyz
 from engine.report import generate_pdf_report
 from engine.project import load_project as read_project, project_to_dict
+from engine.project_bundle import (
+    MAX_ATTACHMENT_BYTES,
+    build_project_bundle,
+    load_project_bundle,
+)
+from engine.spatial import load_xyz_layer, spatial_layer_csv
 from engine.survey import SurveyProfile, BaseStationSeries, export_processing_bundle
 from engine.processing import (
     apply_gravity_reductions,
@@ -38,10 +46,31 @@ from engine.spectral import (
 )
 from engine.euler import euler_window_sweep
 from engine.processing import regular_grid_from_xyz
+from engine.visualization import finite_prism_faces
 
 COLOR_OPTIONS = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown']
 
 st.set_page_config(page_title="KuffGravMag Workbench", layout="wide")
+
+
+def _restore_spatial_layer(processing_steps, attachments):
+    for step in reversed(processing_steps or []):
+        if not isinstance(step, dict) or step.get("name") != "local_spatial_layer":
+            continue
+        parameters = step.get("parameters", {})
+        if not isinstance(parameters, dict):
+            continue
+        raw = attachments.get(parameters.get("attachment_name"))
+        if raw is None:
+            continue
+        return load_xyz_layer(
+            raw,
+            source_crs=parameters.get("source_crs", ""),
+            target_crs=parameters.get("target_crs"),
+            units=parameters.get("units", "input units"),
+            name=parameters.get("source_name", "Local XYZ layer"),
+        )
+    return None
 
 # --- Session State Initialization ---
 if 'bodies' not in st.session_state:
@@ -65,15 +94,32 @@ for key, default in (("field_F", 48000.0), ("field_Inc", 55.0),
     if key not in st.session_state:
         st.session_state[key] = default
 
+for key, default in (
+    ("project_attachments", {}),
+    ("spatial_layer", None),
+    ("project_grid_bytes", None),
+    ("project_grid_name", None),
+    ("m71_source_steps", []),
+):
+    if key not in st.session_state:
+        st.session_state[key] = default
+
 project_upload = st.sidebar.file_uploader(
-    "Load KuffGravMag project (JSON)", type=["json"], key="project_upload"
+    "Load KuffGravMag project (JSON or portable bundle)",
+    type=["json", "kgmproj"], key="project_upload"
 )
 if project_upload is not None:
     project_bytes = project_upload.getvalue()
     project_digest = hashlib.sha256(project_bytes).hexdigest()
     if st.session_state.get("loaded_project_digest") != project_digest:
         try:
-            project = read_project(json.loads(project_bytes.decode("utf-8")))
+            if project_upload.name.lower().endswith(".kgmproj"):
+                bundle = load_project_bundle(project_bytes)
+                project = bundle["project"]
+                attachments = bundle["attachments"]
+            else:
+                project = read_project(json.loads(project_bytes.decode("utf-8")))
+                attachments = {}
             if not project["bodies"]:
                 raise ValueError("Project has no bodies")
             st.session_state.bodies = project["bodies"]
@@ -91,8 +137,27 @@ if project_upload is not None:
             st.session_state.obs_dT = observations["magnetic"]
             st.session_state.m6_profile = project["survey_profile"]
             st.session_state.m6_processing_steps = project["processing_steps"]
+            st.session_state.m71_source_steps = list(project["processing_steps"])
             st.session_state.m6_products = []
             st.session_state.m6_regular_profiles = []
+            st.session_state.project_attachments = attachments
+            st.session_state.project_grid_bytes = None
+            st.session_state.project_grid_name = None
+            for step in reversed(project["processing_steps"]):
+                if not isinstance(step, dict) or step.get("name") != "regular_grid_interpretation_source":
+                    continue
+                parameters = step.get("parameters", {})
+                if not isinstance(parameters, dict):
+                    continue
+                attachment_name = parameters.get("attachment_name")
+                if attachment_name in attachments:
+                    st.session_state.project_grid_bytes = attachments[attachment_name]
+                    st.session_state.project_grid_name = parameters.get("source_name", attachment_name)
+                    st.session_state.data_import_type = "3D Grid Map Transect (XYZ)"
+                    break
+            st.session_state.spatial_layer = _restore_spatial_layer(
+                project["processing_steps"], attachments
+            )
             st.session_state.loaded_project_digest = project_digest
             st.rerun()
         except Exception as exc:
@@ -113,6 +178,55 @@ for key, default in (
 ):
     if key not in st.session_state:
         st.session_state[key] = default
+
+local_layer_upload = st.sidebar.file_uploader(
+    "Load local XYZ spatial layer", type=["csv", "xyz", "txt"], key="m71_local_layer_upload"
+)
+source_crs = st.sidebar.text_input(
+    "Spatial layer source CRS", value="", placeholder="For example EPSG:32630", key="m71_source_crs"
+)
+target_crs = st.sidebar.text_input(
+    "Spatial layer target CRS", value="", placeholder="Blank keeps source coordinates", key="m71_target_crs"
+)
+spatial_units = st.sidebar.text_input(
+    "Spatial layer value units", value="input units", key="m71_spatial_units"
+)
+if st.sidebar.button("Import local layer", key="m71_import_layer"):
+    try:
+        if local_layer_upload is None:
+            raise ValueError("Choose an XYZ/CSV file first")
+        raw = local_layer_upload.getvalue()
+        layer = load_xyz_layer(
+            raw,
+            source_crs=source_crs,
+            target_crs=target_crs or None,
+            units=spatial_units,
+            name=local_layer_upload.name,
+        )
+        digest = hashlib.sha256(raw).hexdigest()
+        safe_basename = "".join(
+            character if character.isalnum() or character in "._-" else "_"
+            for character in local_layer_upload.name
+        ).strip("._")[:100] or "local-data.xyz"
+        attachment_name = f"{digest[:12]}-{safe_basename}"
+        st.session_state.project_attachments[attachment_name] = raw
+        st.session_state.spatial_layer = layer
+        source_step = {
+            "name": "local_spatial_layer",
+            "parameters": {
+                "source_name": layer.name,
+                "attachment_name": attachment_name,
+                "source_sha256": layer.source_sha256,
+                "source_crs": layer.source_crs,
+                "target_crs": layer.target_crs,
+                "units": layer.units,
+                "point_count": int(layer.x.size),
+                "local_only": True,
+            },
+        }
+        st.session_state.m71_source_steps.append(source_step)
+    except Exception as exc:
+        st.sidebar.error(f"Could not load local layer: {exc}")
 
 st.title("🌐 KuffGravMag — 2.5D Mobile Workbench")
 
@@ -222,14 +336,18 @@ with st.sidebar.expander("📐 Edit Active Body Vertices", expanded=False):
 st.sidebar.markdown("---")
 st.sidebar.header("📂 Data Import & Slicing")
 data_import_type = st.sidebar.radio("Import Type",
-                                    ["None / Synthetic", "2D Observed Line (CSV)", "3D Grid Map Transect (XYZ)"])
+                                    ["None / Synthetic", "2D Observed Line (CSV)", "3D Grid Map Transect (XYZ)"],
+                                    key="data_import_type")
 uploaded_file = st.sidebar.file_uploader("Upload Data File", type=["csv", "txt", "dat"])
 
 grid_spatial_data = None
 
 if uploaded_file is not None:
     try:
-        df = pd.read_csv(uploaded_file, sep=r'\s+|,', engine='python').dropna()
+        uploaded_payload = uploaded_file.getvalue()
+        if len(uploaded_payload) > MAX_ATTACHMENT_BYTES:
+            raise ValueError("Portable source files are limited to 32 MiB")
+        df = pd.read_csv(io.BytesIO(uploaded_payload), sep=r'\s+|,', engine='python').dropna()
         df = df.apply(pd.to_numeric, errors='coerce').dropna()
 
         if data_import_type == "2D Observed Line (CSV)":
@@ -243,16 +361,72 @@ if uploaded_file is not None:
             st.session_state.obs_gz = gz_vals
             st.session_state.obs_dT = dT_vals
             st.sidebar.success(f"Loaded 2D Line: {len(x_vals)} points")
+            digest = hashlib.sha256(uploaded_payload).hexdigest()
+            safe_basename = "".join(
+                character if character.isalnum() or character in "._-" else "_"
+                for character in uploaded_file.name
+            ).strip("._")[:100] or "observed-profile.csv"
+            attachment_name = f"{digest[:12]}-{safe_basename}"
+            st.session_state.project_attachments[attachment_name] = uploaded_payload
+            if st.session_state.get("m71_observed_source_digest") != digest:
+                st.session_state.m71_source_steps.append({
+                    "name": "observed_profile_import",
+                    "parameters": {
+                        "source_name": uploaded_file.name,
+                        "attachment_name": attachment_name,
+                        "sha256": digest,
+                        "columns": ["distance_m", "gravity_mgal", "magnetic_nT", "elevation_m"],
+                        "local_only": True,
+                    },
+                })
+                st.session_state.m71_observed_source_digest = digest
 
         elif data_import_type == "3D Grid Map Transect (XYZ)":
             if df.shape[1] >= 3:
                 grid_spatial_data = (df.iloc[:, 0].values, df.iloc[:, 1].values, df.iloc[:, 2].values)
                 st.sidebar.success("3D Grid map parsed successfully!")
+                digest = hashlib.sha256(uploaded_payload).hexdigest()
+                safe_basename = "".join(
+                    character if character.isalnum() or character in "._-" else "_"
+                    for character in uploaded_file.name
+                ).strip("._")[:100] or "grid.xyz"
+                attachment_name = f"{digest[:12]}-{safe_basename}"
+                st.session_state.project_attachments[attachment_name] = uploaded_payload
+                st.session_state.project_grid_bytes = uploaded_payload
+                st.session_state.project_grid_name = uploaded_file.name
+                if st.session_state.get("m71_grid_source_digest") != digest:
+                    st.session_state.m71_source_steps.append({
+                        "name": "regular_grid_interpretation_source",
+                        "parameters": {
+                            "source_name": uploaded_file.name,
+                            "attachment_name": attachment_name,
+                            "sha256": digest,
+                            "size_bytes": len(uploaded_payload),
+                            "coordinate_reference": st.session_state.get("grid_crs", ""),
+                            "units": st.session_state.get("grid_units", "input units"),
+                            "local_only": True,
+                        },
+                    })
+                    st.session_state.m71_grid_source_digest = digest
             else:
                 st.sidebar.error("3D Grid requires at least 3 columns (X, Y, Value).")
-
     except Exception as e:
         st.sidebar.error(f"Error parsing file: {e}")
+elif data_import_type == "3D Grid Map Transect (XYZ)" and st.session_state.project_grid_bytes:
+    try:
+        df = pd.read_csv(
+            io.BytesIO(st.session_state.project_grid_bytes),
+            sep=r'\s+|,', engine='python',
+        ).dropna()
+        df = df.apply(pd.to_numeric, errors='coerce').dropna()
+        if df.shape[1] < 3:
+            raise ValueError("Embedded grid requires X, Y, and value columns")
+        grid_spatial_data = (df.iloc[:, 0].values, df.iloc[:, 1].values, df.iloc[:, 2].values)
+        st.sidebar.success(f"Restored embedded grid: {st.session_state.project_grid_name}")
+    except Exception as e:
+        st.sidebar.error(f"Could not read embedded grid: {e}")
+
+st.session_state.m6_processing_steps = list(st.session_state.m71_source_steps)
 
 # --- Inversion Panel ---
 st.sidebar.markdown("---")
@@ -304,7 +478,15 @@ def _render_m6_processing_panel():
                 )
                 st.session_state.m6_products = []
                 st.session_state.m6_regular_profiles = []
-                st.session_state.m6_processing_steps = []
+                st.session_state.m71_source_steps = [
+                    step for step in st.session_state.m71_source_steps
+                    if isinstance(step, dict) and step.get("name") in {
+                        "observed_profile_import",
+                        "regular_grid_interpretation_source",
+                        "local_spatial_layer",
+                    }
+                ]
+                st.session_state.m6_processing_steps = list(st.session_state.m71_source_steps)
             except Exception as exc:
                 st.error(f"Could not load survey profile: {exc}")
 
@@ -412,7 +594,7 @@ def _render_m6_processing_panel():
                 except Exception as exc:
                     st.error(f"Spectral transform failed: {exc}")
 
-        st.session_state.m6_processing_steps = _m6_processing_manifest(
+        st.session_state.m6_processing_steps = list(st.session_state.m71_source_steps) + _m6_processing_manifest(
             st.session_state.m6_products, st.session_state.m6_regular_profiles
         )
         if st.session_state.m6_processing_steps:
@@ -514,9 +696,9 @@ if st.sidebar.button("🚀 Run Magnetic Inversion"):
 col_left, col_right = st.columns([1, 1.2])
 
 with col_left:
-    tab_model, tab_map, tab_grid, tab_lab = st.tabs([
+    tab_model, tab_map, tab_grid, tab_spatial, tab_3d, tab_lab = st.tabs([
         "Subsurface 2.5D Model", "3D Map Transect Slicer", "Grid Interpretation",
-        "Academic & Research Lab",
+        "Local Spatial Layer", "Finite Strike 3D Model", "Academic & Research Lab",
     ])
 
     with tab_lab:
@@ -762,6 +944,16 @@ with col_left:
             grid_units_label = st.selectbox("Grid value units", ["nT", "mGal", "other input units"], key="grid_units")
             grid_units = "input units" if grid_units_label == "other input units" else grid_units_label
             grid_crs = st.text_input("Grid coordinate reference", "local projected grid (metres)", key="grid_crs")
+            for step in reversed(st.session_state.m71_source_steps):
+                if not isinstance(step, dict) or step.get("name") != "regular_grid_interpretation_source":
+                    continue
+                parameters = step.get("parameters", {})
+                if not isinstance(parameters, dict):
+                    continue
+                if parameters.get("attachment_name") in st.session_state.project_attachments:
+                    parameters["coordinate_reference"] = grid_crs
+                    parameters["units"] = grid_units
+                    break
             try:
                 grid = regular_grid_from_xyz(
                     gx, gy, gv, units=grid_units, coordinate_reference=grid_crs
@@ -938,6 +1130,94 @@ with col_left:
             except Exception as exc:
                 st.warning(f"Grid interpretation needs a complete, uniformly spaced rectangular XYZ grid: {exc}")
 
+    with tab_spatial:
+        layer = st.session_state.spatial_layer
+        if layer is None:
+            st.info("Load a local XYZ layer in the sidebar. CRS conversion requires explicit source and target CRS definitions.")
+        else:
+            st.caption(
+                f"{layer.x.size} points · {layer.source_crs} → {layer.target_crs} · "
+                f"{layer.units} · SHA-256 {layer.source_sha256}"
+            )
+            st.info("Local file layer only. No basemap or remote service is requested.")
+            fig_layer, ax_layer = plt.subplots(figsize=(7, 5))
+            points = ax_layer.scatter(layer.x, layer.y, c=layer.values, cmap="viridis", s=24)
+            fig_layer.colorbar(points, ax=ax_layer, label=layer.units)
+            ax_layer.set_xlabel(f"X ({layer.x_unit})")
+            ax_layer.set_ylabel(f"Y ({layer.y_unit})")
+            ax_layer.set_title(layer.name)
+            ax_layer.set_aspect("equal", adjustable="datalim")
+            ax_layer.grid(True, alpha=0.2)
+            st.pyplot(fig_layer)
+            plt.close(fig_layer)
+            st.download_button(
+                "Export transformed XYZ with CRS metadata",
+                data=spatial_layer_csv(layer),
+                file_name="KuffGravMag_Local_Spatial_Layer.csv",
+                mime="text/csv",
+                key="m71_export_spatial_layer",
+            )
+
+    with tab_3d:
+        finite_bodies = [
+            (index, body) for index, body in enumerate(st.session_state.bodies)
+            if body.strike_mode == "finite"
+        ]
+        if not finite_bodies:
+            st.info("Set a model body's strike mode to Finite Strike to view its 3D prism.")
+        else:
+            fig_3d = plt.figure(figsize=(7, 5.5))
+            ax_3d = fig_3d.add_subplot(111, projection="3d")
+            all_faces = []
+            for index, body in finite_bodies:
+                try:
+                    faces = finite_prism_faces(body)
+                except ValueError as exc:
+                    st.warning(f"{body.name}: {exc}")
+                    continue
+                all_faces.extend(faces)
+                ax_3d.add_collection3d(Poly3DCollection(
+                    faces,
+                    facecolor=body.color,
+                    edgecolor="#26364a",
+                    linewidth=1.1 if index == st.session_state.active_idx else 0.65,
+                    alpha=0.78 if index == st.session_state.active_idx else 0.48,
+                ))
+                ax_3d.text(
+                    float(np.mean(body.x[:-1])),
+                    (float(body.y_min) + float(body.y_max)) / 2.0,
+                    float(np.mean(body.z[:-1])),
+                    body.name,
+                    fontsize=8,
+                )
+            if all_faces:
+                points = np.vstack(all_faces)
+                minima = np.min(points, axis=0)
+                maxima = np.max(points, axis=0)
+                spans = np.maximum(maxima - minima, 1.0)
+                padding = spans * 0.06
+                x_limits = (minima[0] - padding[0], maxima[0] + padding[0])
+                y_limits = (minima[1] - padding[1], maxima[1] + padding[1])
+                z_lower = min(0.0, minima[2] - padding[2])
+                z_upper = maxima[2] + padding[2]
+                ax_3d.set_xlim(*x_limits)
+                ax_3d.set_ylim(*y_limits)
+                ax_3d.set_zlim(z_upper, z_lower)
+                ax_3d.set_box_aspect((
+                    x_limits[1] - x_limits[0],
+                    y_limits[1] - y_limits[0],
+                    z_upper - z_lower,
+                ))
+                ax_3d.set_xlabel("Profile distance X (m)")
+                ax_3d.set_ylabel("Strike Y (m)")
+                ax_3d.set_zlabel("Depth Z (m, positive down)")
+                ax_3d.set_title("Finite-strike prism geometry")
+                ax_3d.view_init(elev=23, azim=-58)
+                ax_3d.grid(True)
+            st.pyplot(fig_3d)
+            plt.close(fig_3d)
+            st.caption("The active body's 2D vertices and finite strike bounds are edited in the sidebar.")
+
     with tab_model:
         fig_mod, ax_mod = plt.subplots(figsize=(6, 5))
         if np.any(st.session_state.z_obs != 0):
@@ -1027,17 +1307,45 @@ project_observations = {
     "magnetic": st.session_state.obs_dT,
 }
 project_fields = {"F": spin_F, "Inc": spin_Inc, "Dec": spin_Dec, "Alpha": spin_alpha}
-project_json = json.dumps(project_to_dict(
+project_data = project_to_dict(
     st.session_state.bodies,
     project_fields,
     project_observations,
     survey_profile=st.session_state.m6_profile,
     processing_steps=st.session_state.m6_processing_steps,
-), indent=2, allow_nan=False)
+)
+project_json = json.dumps(project_data, indent=2, allow_nan=False)
 st.sidebar.download_button(
     "Save KuffGravMag Project (JSON)", data=project_json,
     file_name="KuffGravMag_Project.json", mime="application/json",
 )
+attachment_key = hashlib.sha256(
+    b"".join(
+        name.encode("utf-8") + hashlib.sha256(content).digest()
+        for name, content in sorted(st.session_state.project_attachments.items())
+    )
+).hexdigest()
+bundle_key = hashlib.sha256(
+    project_json.encode("utf-8") + attachment_key.encode("ascii")
+).hexdigest()
+if st.session_state.get("portable_bundle_key") != bundle_key:
+    try:
+        st.session_state.portable_project_bundle = build_project_bundle(
+            project_data, st.session_state.project_attachments
+        )
+        st.session_state.portable_bundle_key = bundle_key
+    except Exception as exc:
+        st.session_state.portable_project_bundle = None
+        st.session_state.portable_bundle_error = str(exc)
+if st.session_state.get("portable_project_bundle") is not None:
+    st.sidebar.download_button(
+        "Save portable project bundle (.kgmproj)",
+        data=st.session_state.portable_project_bundle,
+        file_name="KuffGravMag_Project.kgmproj",
+        mime="application/vnd.kuffgravmag.project+zip",
+    )
+elif st.session_state.get("portable_bundle_error"):
+    st.sidebar.warning(f"Portable bundle unavailable: {st.session_state.portable_bundle_error}")
 
 # Fixed PDF Generation Workflow
 if col_exp2.button("📄 Prepare Executive PDF Report"):

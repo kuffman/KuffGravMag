@@ -49,6 +49,7 @@ class StudioWorkspace(QWidget):
             ("Process survey profile…", "process_survey"),
             ("Interpret regular grid…", "interpret_grid"),
             ("Academic & Research Laboratory…", "academic_lab"),
+            ("Load local XYZ spatial layer…", "load_spatial_layer"),
             ("Add model body", "add_body"),
             ("Run gravity inversion", "invert_gravity"),
             ("Run magnetic inversion", "invert_magnetic"),
@@ -76,6 +77,7 @@ class StudioWorkspace(QWidget):
         inversion_ready=False,
         processing_steps=(),
         grid_name=None,
+        spatial_layer_name=None,
     ):
         self.project_label.setText(project_name)
         self.state_label.setText("Unsaved changes" if dirty else "All changes saved")
@@ -121,6 +123,13 @@ class StudioWorkspace(QWidget):
         grid_item = QTreeWidgetItem([grid_label])
         grid_item.setData(0, Qt.ItemDataRole.UserRole, "grid")
         root.addChild(grid_item)
+        spatial_label = (
+            f"Local spatial layer · {spatial_layer_name}"
+            if spatial_layer_name else "Local spatial layer · none loaded"
+        )
+        spatial_item = QTreeWidgetItem([spatial_label])
+        spatial_item.setData(0, Qt.ItemDataRole.UserRole, "spatial_layer")
+        root.addChild(spatial_item)
         reports_item = QTreeWidgetItem(["Reports & exports"])
         reports_item.setData(0, Qt.ItemDataRole.UserRole, "reports")
         root.addChild(reports_item)

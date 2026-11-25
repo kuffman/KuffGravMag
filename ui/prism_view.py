@@ -27,15 +27,19 @@ class FinitePrismView(QWidget):
         layout.addWidget(self.canvas, stretch=1)
         layout.addWidget(self.note)
         self.finite_body_count = 0
+        self.active_index = None
+        self.visible_body_indices = ()
         self.update_scene((), None)
 
     def update_scene(self, bodies, active_index=None):
         self.figure.clear()
         axis = self.figure.add_subplot(111, projection="3d")
+        self.active_index = active_index
         finite_bodies = [
             (index, body) for index, body in enumerate(bodies)
             if getattr(body, "strike_mode", None) == "finite"
         ]
+        self.visible_body_indices = tuple(index for index, _body in finite_bodies)
         self.finite_body_count = len(finite_bodies)
         warnings = []
         all_vertices = []

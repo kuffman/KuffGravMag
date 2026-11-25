@@ -17,6 +17,8 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 from app import MainWindow
 from engine.project import load_project
 from ui.academic_lab import AcademicLabDialog
+from engine.project_bundle import load_project_bundle
+from engine.spatial import load_xyz_layer
 from ui.grid_interpretation import GridInterpretationDialog
 
 
@@ -51,6 +53,38 @@ def main():
         if len(saved["bodies"]) != len(window.bodies):
             raise RuntimeError("The Studio project save did not preserve the model")
         np.testing.assert_array_equal(saved["observations"]["gravity"], window.obs_gz)
+
+        raw_layer = b"x,y,value\n500000,663204.567,1\n500100,663204.567,2\n500000,663304.567,3\n"
+        layer = load_xyz_layer(
+            raw_layer, source_crs="EPSG:32630", target_crs="EPSG:4326", units="mGal",
+            name="synthetic-ghana-grid.csv",
+        )
+        attachment_name = window._store_project_attachment(layer.name, raw_layer)
+        window.spatial_layer = layer
+        window.spatial_layer_attachment_name = attachment_name
+        window.processing_steps.append({
+            "name": "local_spatial_layer",
+            "parameters": {
+                "source_name": layer.name,
+                "attachment_name": attachment_name,
+                "source_sha256": layer.source_sha256,
+                "source_crs": layer.source_crs,
+                "target_crs": layer.target_crs,
+                "units": layer.units,
+                "point_count": int(layer.x.size),
+                "local_only": True,
+            },
+        })
+        bundle_path = Path(temp_dir) / "workflow.kgmproj"
+        window._save_project_to_path(bundle_path)
+        bundle = load_project_bundle(bundle_path)
+        if bundle["attachments"] != {attachment_name: raw_layer}:
+            raise RuntimeError("The portable project did not preserve its embedded XYZ layer")
+        window._apply_project(
+            bundle["project"], project_path=bundle_path, attachments=bundle["attachments"]
+        )
+        if window.spatial_layer is None or window.spatial_layer.source_sha256 != layer.source_sha256:
+            raise RuntimeError("The portable project did not restore its spatial layer")
 
     n = 64
     spacing = 10.0
