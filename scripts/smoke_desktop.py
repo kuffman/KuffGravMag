@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from app import MainWindow
 from engine.project import load_project
+from ui.academic_lab import AcademicLabDialog
 from engine.project_bundle import load_project_bundle
 from engine.spatial import load_xyz_layer
 from ui.grid_interpretation import GridInterpretationDialog
@@ -115,6 +116,19 @@ def main():
     if "Euler windows" not in grid_dialog.status.toPlainText():
         raise RuntimeError(f"The Euler window UI did not report its filters: {grid_dialog.status.toPlainText()}")
     grid_dialog.close()
+
+    lab_dialog = AcademicLabDialog(window)
+    experiment = lab_dialog.run_experiment()
+    if experiment.model_kind != "sphere" or experiment.seed != 20261124:
+        raise RuntimeError("The Academic Lab did not produce its reproducible default experiment")
+    lab_dialog.model.setCurrentIndex(1)
+    lab_dialog.field.setCurrentIndex(1)
+    magnetic_experiment = lab_dialog.run_experiment()
+    if magnetic_experiment.response_units != "nT" or not np.all(
+        np.isfinite(magnetic_experiment.observed_response)
+    ):
+        raise RuntimeError("The Academic Lab magnetic cylinder response is invalid")
+    lab_dialog.close()
 
     QTimer.singleShot(100, app.quit)
     app.exec()

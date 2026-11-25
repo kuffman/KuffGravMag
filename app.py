@@ -53,6 +53,7 @@ from ui.project_recovery import (
 )
 from ui.studio_workspace import StudioWorkspace
 from ui.studio_workflow import prepare_model_observations
+from ui.academic_lab import AcademicLabDialog
 from ui.spatial_layer_dialog import SpatialLayerDialog
 
 COLOR_OPTIONS = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown']
@@ -817,6 +818,7 @@ class MainWindow(QMainWindow):
             "import_observations": self.import_observed_csv,
             "process_survey": self.open_survey_processing,
             "interpret_grid": self.open_grid_interpretation,
+            "academic_lab": self.open_academic_lab,
             "load_spatial_layer": self.load_local_spatial_layer,
             "add_body": self.add_body,
             "invert_gravity": lambda: self.run_inversion("gravity"),
@@ -1267,6 +1269,10 @@ class MainWindow(QMainWindow):
             self._mark_project_dirty()
         except Exception as exc:
             QMessageBox.critical(self, "Grid interpretation input error", str(exc))
+
+    def open_academic_lab(self):
+        dialog = AcademicLabDialog(self)
+        dialog.exec()
 
     def load_local_spatial_layer(self):
         file_path, _ = QFileDialog.getOpenFileName(
