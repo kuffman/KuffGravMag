@@ -24,6 +24,10 @@ With `QT_QPA_PLATFORM=cocoa`, `QT_DEBUG_PLUGINS=1` showed `libqcocoa.dylib` load
 
 The offscreen smoke verifies widget creation and rendering only. It does not verify Cocoa display presentation, physical-screen interaction, or window placement. GitHub's macOS arm64 offscreen desktop/web/PDF job passed separately on PR #8's fix commit.
 
+## M7.1 worktree recheck
+
+In the M7.1 worktree, PyQt 6.12.1 and Qt 6.12.0 are present and the `libqoffscreen.dylib` and `libqcocoa.dylib` arm64 files exist. A fresh local `QApplication` start with `QT_QPA_PLATFORM=offscreen` now aborts with “Could not find the Qt platform plugin `offscreen`”; setting the plugin search path explicitly did not resolve it. This differs from the earlier successful smoke above, so the current local offscreen result is **not verified** and the cause remains open. The headless Cocoa check that returned zero physical screens is a separate limitation and does not diagnose the offscreen plugin failure. The fresh M7.1 macOS CI result will provide a clean offscreen check in its runner.
+
 ## Reproduction
 
 ```sh

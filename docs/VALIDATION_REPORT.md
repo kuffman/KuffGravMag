@@ -8,7 +8,7 @@ The report includes no wall-clock timestamp; the seed, trial count, dependency p
 - Python requirement: `>=3.11,<3.12`
 - NumPy: `2.4.6`; SciPy: `1.17.1`; Pandas: `2.3.3`; Harmonica: `0.7.0`
 - Harmonica is an optional validation dependency pinned to `0.7.0`; it is not a runtime application dependency.
-- `uv.lock` SHA-256: `413285a6b99bc78866eeb2c79e413f3ffde77dedb6a364249185d65a3191da2d`
+- `uv.lock` SHA-256: `adaaa1bce8ad70af834dd19d80f01a788186223ca09cb514636c4a518b189019`
 - Inversion noise ensemble: seed `20261124`, `32` paired trials per level.
 
 ## M5.1 analytical and independent references
