@@ -20,6 +20,7 @@ from engine.project import load_project, project_to_dict
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "shared-geological-model-v1.json"
+ELECTRICAL_FIXTURE = Path(__file__).parent / "fixtures" / "shared-geological-model-electrical-v0.1.0-draft.json"
 MU0 = 4.0 * math.pi * 1e-7
 G = 6.67430e-11
 
@@ -107,6 +108,37 @@ def test_shared_model_round_trips_and_native_project_keeps_interop_metadata():
     restored_export, _ = export_kgm_model(restored["bodies"], field, model_metadata=restored["shared_model_metadata"])
     assert restored["shared_model_metadata"]["modelId"] == imported.model_metadata["modelId"]
     assert restored_export["geometry"]["entities"][1]["geometry"]["ring"] == exported["geometry"]["entities"][1]["geometry"]["ring"]
+
+
+def test_draft_electrical_extension_states_survive_native_project_round_trip():
+    source = json.loads(ELECTRICAL_FIXTURE.read_text())
+    expected = source["geometry"]["entities"]
+    imported = import_shared_model(ELECTRICAL_FIXTURE)
+    native = project_to_dict(
+        imported.bodies,
+        {"F": 48000, "Inc": 60, "Dec": 0, "Alpha": 0},
+        shared_model_metadata=imported.model_metadata,
+    )
+    restored = load_project(native)
+    exported, warnings = export_kgm_model(
+        restored["bodies"],
+        imported.magnetic_field,
+        model_metadata=restored["shared_model_metadata"],
+    )
+    validated, _ = validate_shared_model(exported)
+    actual = validated["geometry"]["entities"]
+
+    assert not warnings
+    assert [entity["extensions"] for entity in actual] == [
+        entity.get("extensions", {}) for entity in expected
+    ]
+    assert actual[0]["extensions"]["org.kuffman.kge:electrical"]["dc"]["state"] == "known"
+    assert actual[1]["extensions"]["org.kuffman.kge:electrical"]["dc"] == {"state": "unknown"}
+    assert "org.kuffman.kge:electrical" not in actual[2].get("extensions", {})
+    for entity in actual:
+        assert "electrical" not in entity["properties"]
+    for before, after in zip(expected, actual):
+        assert before["geometry"]["ring"] == after["geometry"]["ring"]
 
 
 def test_layer_round_trip_preserves_imported_ring_across_float_datum_conversion():
