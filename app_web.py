@@ -12,6 +12,7 @@ from scipy.interpolate import griddata
 
 # Core computational backend engine imports
 from engine.forward import Body2D, PotentialField2D
+from engine.geological_exchange import export_kgm_model, import_shared_model, validate_shared_model
 from engine.academic import (
     MODEL_EQUATIONS,
     MODEL_LIMITATIONS,
@@ -96,6 +97,7 @@ for key, default in (("field_F", 48000.0), ("field_Inc", 55.0),
 
 for key, default in (
     ("project_attachments", {}),
+    ("shared_model_metadata", None),
     ("spatial_layer", None),
     ("project_grid_bytes", None),
     ("project_grid_name", None),
@@ -123,6 +125,7 @@ if project_upload is not None:
             if not project["bodies"]:
                 raise ValueError("Project has no bodies")
             st.session_state.bodies = project["bodies"]
+            st.session_state.shared_model_metadata = project.get("shared_model_metadata")
             st.session_state.active_idx = 0
             field_values = project["field_params"]
             st.session_state.field_F = field_values.get("F", 48000.0)
@@ -162,6 +165,35 @@ if project_upload is not None:
             st.rerun()
         except Exception as exc:
             st.sidebar.error(f"Could not load project: {exc}")
+
+shared_model_upload = st.sidebar.file_uploader(
+    "Import shared geological model (.kgsm.json)", type=["json"], key="shared_model_upload"
+)
+if shared_model_upload is not None:
+    shared_model_bytes = shared_model_upload.getvalue()
+    shared_model_digest = hashlib.sha256(shared_model_bytes).hexdigest()
+    if st.session_state.get("loaded_shared_model_digest") != shared_model_digest:
+        try:
+            result = import_shared_model(shared_model_bytes)
+            if not result.bodies:
+                raise ValueError("Shared geological model contains no supported polygon bodies")
+            st.session_state.bodies = list(result.bodies)
+            st.session_state.active_idx = 0
+            st.session_state.shared_model_metadata = result.model_metadata
+            if result.magnetic_field is not None:
+                field = result.magnetic_field
+                st.session_state.field_F = field["intensity_nT"]
+                st.session_state.field_Inc = field["inclination_deg"]
+                st.session_state.field_Dec = field["declination_deg"]
+                st.session_state.field_alpha = ((field["profileAzimuth_deg"] + 180.0) % 360.0) - 180.0
+            warnings = list(result.warnings)
+            st.session_state.loaded_shared_model_digest = shared_model_digest
+            st.session_state.shared_model_message = "Shared model imported. Existing observation data remains attached to this project." + (" " + " ".join(warnings) if warnings else "")
+            st.rerun()
+        except Exception as exc:
+            st.sidebar.error(f"Could not import shared geological model: {exc}")
+if st.session_state.get("shared_model_message"):
+    st.sidebar.info(st.session_state.pop("shared_model_message"))
 
 if 'x_obs' not in st.session_state:
     st.session_state.x_obs = np.linspace(-1000, 1000, 250)
@@ -1313,8 +1345,28 @@ project_data = project_to_dict(
     project_observations,
     survey_profile=st.session_state.m6_profile,
     processing_steps=st.session_state.m6_processing_steps,
+    shared_model_metadata=st.session_state.shared_model_metadata,
 )
 project_json = json.dumps(project_data, indent=2, allow_nan=False)
+shared_model_data, shared_model_warnings = export_kgm_model(
+    st.session_state.bodies,
+    {
+        "intensity_nT": spin_F,
+        "inclination_deg": spin_Inc,
+        "declination_deg": spin_Dec,
+        "profileAzimuth_deg": spin_alpha % 360.0,
+    },
+    model_metadata=st.session_state.shared_model_metadata,
+)
+validate_shared_model(shared_model_data)
+st.sidebar.download_button(
+    "Export shared geological model (.kgsm.json)",
+    data=json.dumps(shared_model_data, indent=2, allow_nan=False),
+    file_name="KuffGravMag_Shared_Model.kgsm.json",
+    mime="application/json",
+)
+if shared_model_warnings:
+    st.sidebar.warning(" ".join(shared_model_warnings))
 st.sidebar.download_button(
     "Save KuffGravMag Project (JSON)", data=project_json,
     file_name="KuffGravMag_Project.json", mime="application/json",

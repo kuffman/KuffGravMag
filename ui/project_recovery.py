@@ -15,6 +15,7 @@ def save_recovery_snapshot(
     *,
     survey_profile=None,
     processing_steps=None,
+    shared_model_metadata=None,
 ):
     """Persist the current project inputs to a recoverable schema-compatible file."""
     return save_project(
@@ -24,6 +25,7 @@ def save_recovery_snapshot(
         observations,
         survey_profile=survey_profile,
         processing_steps=processing_steps,
+        shared_model_metadata=shared_model_metadata,
     )
 
 
