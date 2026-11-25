@@ -1,0 +1,373 @@
+{
+  "format": "KuffGeoSharedGeologicalModel",
+  "schemaVersion": 1,
+  "schemaRevision": "1.0.0",
+  "modelId": "synthetic:kgm-kgslab-layered-v1",
+  "name": "Synthetic three-layer interoperability model",
+  "coordinateReference": {
+    "axisOrder": [
+      "x",
+      "y",
+      "z"
+    ],
+    "horizontal": {
+      "kind": "local_transect",
+      "id": "local:synthetic-profile",
+      "unit": "m",
+      "axisOrder": [
+        "x",
+        "y"
+      ],
+      "xAxis": "along_profile",
+      "yAxis": "left_of_profile",
+      "azimuthDegFromNorthClockwise": 0.0
+    },
+    "vertical": {
+      "datumId": "local:ground-surface",
+      "unit": "m",
+      "positiveDirection": "up",
+      "groundSurfaceCoordinateM": 1.1
+    }
+  },
+  "geometry": {
+    "interfaces": [
+      {
+        "id": "interface:surface",
+        "name": "Ground surface",
+        "coordinates": [
+          [
+            0,
+            1.1
+          ],
+          [
+            20,
+            1.1
+          ]
+        ]
+      },
+      {
+        "id": "interface:topsoil-base",
+        "name": "Topsoil base",
+        "coordinates": [
+          [
+            0,
+            -0.9
+          ],
+          [
+            20,
+            -0.9
+          ]
+        ]
+      },
+      {
+        "id": "interface:weathered-base",
+        "name": "Weathered rock base",
+        "coordinates": [
+          [
+            0,
+            -5.9
+          ],
+          [
+            20,
+            -5.9
+          ]
+        ]
+      },
+      {
+        "id": "interface:bedrock-reference",
+        "name": "Synthetic model base",
+        "coordinates": [
+          [
+            0,
+            -15.9
+          ],
+          [
+            20,
+            -15.9
+          ]
+        ]
+      }
+    ],
+    "entities": [
+      {
+        "id": "layer:topsoil",
+        "name": "Synthetic topsoil",
+        "kind": "layer",
+        "geometry": {
+          "kind": "section_polygon",
+          "ring": [
+            [
+              0,
+              1.1
+            ],
+            [
+              20,
+              1.1
+            ],
+            [
+              20,
+              -0.9
+            ],
+            [
+              0,
+              -0.9
+            ],
+            [
+              0,
+              1.1
+            ]
+          ],
+          "strikeExtent": {
+            "kind": "infinite"
+          }
+        },
+        "properties": {
+          "density": {
+            "state": "known",
+            "basis": "contrast",
+            "value": 250.0,
+            "unit": "kg/m3"
+          },
+          "magneticSusceptibility": {
+            "state": "known",
+            "value": 0.012,
+            "unit": "SI"
+          },
+          "remanence": {
+            "state": "known",
+            "magnitude_A_per_m": 0.0,
+            "inclination_deg": 0.0,
+            "declination_deg": 0.0,
+            "orientationReference": "geographic_north_inclination_positive_down"
+          },
+          "seismic": {
+            "pWaveVelocity": {
+              "state": "known",
+              "value": 500,
+              "unit": "m/s"
+            },
+            "sWaveVelocity": {
+              "state": "unknown",
+              "unit": "m/s"
+            }
+          }
+        },
+        "extensions": {
+          "org.kuffman.kge:electrical": {
+            "extensionVersion": "0.1.0-draft",
+            "hostSchemaRevision": "1.0.0",
+            "dc": {
+              "state": "known",
+              "representation": "isotropic_scalar",
+              "resistivity": {
+                "value": 100.0,
+                "unit": "ohm m"
+              },
+              "conductivity": {
+                "value": 0.01,
+                "unit": "S/m"
+              }
+            }
+          },
+          "org.example:opaque": {
+            "source": "roundtrip-audit",
+            "nested": {
+              "preserve": true,
+              "values": [
+                1,
+                2,
+                3
+              ]
+            }
+          }
+        },
+        "stratigraphicOrder": 0,
+        "topInterfaceId": "interface:surface",
+        "bottomInterfaceId": "interface:topsoil-base"
+      },
+      {
+        "id": "layer:weathered-rock",
+        "name": "Synthetic weathered rock",
+        "kind": "layer",
+        "geometry": {
+          "kind": "section_polygon",
+          "ring": [
+            [
+              0,
+              -0.9
+            ],
+            [
+              20,
+              -0.9
+            ],
+            [
+              20,
+              -5.9
+            ],
+            [
+              0,
+              -5.9
+            ],
+            [
+              0,
+              -0.9
+            ]
+          ],
+          "strikeExtent": {
+            "kind": "infinite"
+          }
+        },
+        "properties": {
+          "density": {
+            "state": "known",
+            "basis": "contrast",
+            "value": 500.0,
+            "unit": "kg/m3"
+          },
+          "magneticSusceptibility": {
+            "state": "known",
+            "value": 0.025,
+            "unit": "SI"
+          },
+          "remanence": {
+            "state": "known",
+            "magnitude_A_per_m": 1.2,
+            "inclination_deg": 35.0,
+            "declination_deg": 15.0,
+            "orientationReference": "geographic_north_inclination_positive_down"
+          },
+          "seismic": {
+            "pWaveVelocity": {
+              "state": "known",
+              "value": 1500,
+              "unit": "m/s"
+            },
+            "sWaveVelocity": {
+              "state": "unknown",
+              "unit": "m/s"
+            }
+          },
+          "elastic": {
+            "bulkModulus": {
+              "state": "unknown",
+              "unit": "Pa"
+            }
+          }
+        },
+        "extensions": {
+          "org.kuffman.kge:electrical": {
+            "extensionVersion": "0.1.0-draft",
+            "hostSchemaRevision": "1.0.0",
+            "dc": {
+              "state": "unknown"
+            }
+          },
+          "org.example:opaque": {
+            "source": "roundtrip-audit",
+            "nested": {
+              "preserve": true,
+              "values": [
+                1,
+                2,
+                3
+              ]
+            }
+          }
+        },
+        "stratigraphicOrder": 1,
+        "topInterfaceId": "interface:topsoil-base",
+        "bottomInterfaceId": "interface:weathered-base"
+      },
+      {
+        "id": "layer:bedrock",
+        "name": "Synthetic bedrock reference",
+        "kind": "layer",
+        "geometry": {
+          "kind": "section_polygon",
+          "ring": [
+            [
+              0,
+              -5.9
+            ],
+            [
+              20,
+              -5.9
+            ],
+            [
+              20,
+              -15.9
+            ],
+            [
+              0,
+              -15.9
+            ],
+            [
+              0,
+              -5.9
+            ]
+          ],
+          "strikeExtent": {
+            "kind": "infinite"
+          }
+        },
+        "properties": {
+          "density": {
+            "state": "known",
+            "basis": "contrast",
+            "value": -100.0,
+            "unit": "kg/m3"
+          },
+          "magneticSusceptibility": {
+            "state": "known",
+            "value": 0.006,
+            "unit": "SI"
+          },
+          "remanence": {
+            "state": "known",
+            "magnitude_A_per_m": 0.0,
+            "inclination_deg": 0.0,
+            "declination_deg": 0.0,
+            "orientationReference": "geographic_north_inclination_positive_down"
+          },
+          "seismic": {
+            "pWaveVelocity": {
+              "state": "known",
+              "value": 3500,
+              "unit": "m/s"
+            },
+            "sWaveVelocity": {
+              "state": "unknown",
+              "unit": "m/s"
+            }
+          }
+        },
+        "extensions": {},
+        "stratigraphicOrder": 2,
+        "topInterfaceId": "interface:weathered-base",
+        "bottomInterfaceId": "interface:bedrock-reference"
+      }
+    ]
+  },
+  "provenance": {
+    "createdAt": "2026-11-25T00:00:00Z",
+    "sourceApplication": "synthetic-fixture",
+    "sourceVersion": "1.0.0",
+    "sourceModelId": "synthetic:kgm-kgslab-layered-v1",
+    "sourceHashes": [],
+    "transformations": [
+      "Synthetic values only; not field data or a geological interpretation."
+    ]
+  },
+  "extensions": {
+    "org.kuffgeo:fixture": {
+      "synthetic": true,
+      "note": "Not field data."
+    }
+  },
+  "magneticField": {
+    "intensity_nT": 48000.0,
+    "inclination_deg": 60.0,
+    "declination_deg": 0.0,
+    "profileAzimuth_deg": 0.0
+  }
+}
