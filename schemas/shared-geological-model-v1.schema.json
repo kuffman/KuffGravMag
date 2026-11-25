@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:kuffgeo:shared-geological-model:1.0.0",
+  "title": "KuffGeo Shared Geological Model Exchange",
+  "$comment": "Conforming readers MUST also enforce runtime limits and topology rules not expressible here: 5 MiB UTF-8 input, JSON depth 32, at most 100000 total vertices, at most 5000000 geometry-validation operations, globally unique stable IDs, valid interface references, closed simple polygon rings, and closed consistently oriented connected polyhedron manifolds with non-zero volume. When both local-transect azimuths are known, magneticField.profileAzimuth_deg MUST equal coordinateReference.horizontal.azimuthDegFromNorthClockwise.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "schemaVersion", "schemaRevision", "modelId", "name", "coordinateReference", "geometry", "provenance"],
+  "properties": {
+    "format": { "const": "KuffGeoSharedGeologicalModel" },
+    "schemaVersion": { "const": 1 },
+    "schemaRevision": { "const": "1.0.0" },
+    "modelId": { "$ref": "#/$defs/id" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "coordinateReference": { "$ref": "#/$defs/coordinateReference" },
+    "magneticField": { "$ref": "#/$defs/magneticField" },
+    "geometry": { "$ref": "#/$defs/geometry" },
+    "provenance": { "$ref": "#/$defs/provenance" },
+    "extensions": { "$ref": "#/$defs/extensions" }
+  },
+  "$defs": {
+    "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]*$" },
+    "coordinateReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["axisOrder", "horizontal", "vertical"],
+      "properties": {
+        "axisOrder": { "const": ["x", "y", "z"] },
+        "horizontal": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "id", "unit", "axisOrder", "xAxis", "yAxis", "azimuthDegFromNorthClockwise"],
+              "properties": {
+                "kind": { "const": "local_transect" },
+                "id": { "$ref": "#/$defs/id" },
+                "unit": { "const": "m" },
+                "axisOrder": { "const": ["x", "y"] },
+                "xAxis": { "const": "along_profile" },
+                "yAxis": { "const": "left_of_profile" },
+                "azimuthDegFromNorthClockwise": { "type": ["number", "null"], "minimum": 0, "exclusiveMaximum": 360 }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "authority", "code", "unit", "axisOrder", "origin", "azimuthDegFromNorthClockwise"],
+              "properties": {
+                "kind": { "const": "projected_crs" },
+                "authority": { "const": "EPSG" },
+                "code": { "type": "string", "pattern": "^[0-9]{4,6}$" },
+                "unit": { "const": "m" },
+                "axisOrder": { "const": ["easting", "northing"] },
+                "origin": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }], "minItems": 2, "maxItems": 2 },
+                "azimuthDegFromNorthClockwise": { "type": "number", "minimum": 0, "exclusiveMaximum": 360 }
+              }
+            }
+          ]
+        },
+        "vertical": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["datumId", "unit", "positiveDirection", "groundSurfaceCoordinateM"],
+          "properties": {
+            "datumId": { "$ref": "#/$defs/id" },
+            "unit": { "const": "m" },
+            "positiveDirection": { "enum": ["up", "down"] },
+            "groundSurfaceCoordinateM": { "type": "number" }
+          }
+        }
+      }
+    },
+    "magneticField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intensity_nT", "inclination_deg", "declination_deg", "profileAzimuth_deg"],
+      "properties": {
+        "intensity_nT": { "type": "number", "exclusiveMinimum": 0 },
+        "inclination_deg": { "type": "number", "minimum": -90, "maximum": 90 },
+        "declination_deg": { "type": "number", "minimum": -180, "maximum": 180 },
+        "profileAzimuth_deg": { "type": "number", "minimum": 0, "exclusiveMaximum": 360 }
+      }
+    },
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["interfaces", "entities"],
+      "properties": {
+        "interfaces": { "type": "array", "maxItems": 512, "items": { "$ref": "#/$defs/interface" } },
+        "entities": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/entity" } }
+      }
+    },
+    "interface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "coordinates"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "coordinates": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2048,
+          "items": { "$ref": "#/$defs/sectionPoint" }
+        },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      }
+    },
+    "sectionPoint": {
+      "type": "array",
+      "prefixItems": [{ "type": "number" }, { "type": "number" }],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "kind", "geometry", "properties"],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "kind": { "enum": ["layer", "body"] },
+        "stratigraphicOrder": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "topInterfaceId": { "$ref": "#/$defs/id" },
+        "bottomInterfaceId": { "$ref": "#/$defs/id" },
+        "geometry": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "ring", "strikeExtent"],
+              "properties": {
+                "kind": { "const": "section_polygon" },
+                "ring": { "type": "array", "minItems": 4, "maxItems": 2049, "items": { "$ref": "#/$defs/sectionPoint" } },
+                "strikeExtent": {
+                  "oneOf": [
+                    { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "infinite" } } },
+                    { "type": "object", "additionalProperties": false, "required": ["kind", "yMinM", "yMaxM"], "properties": { "kind": { "const": "finite" }, "yMinM": { "type": "number" }, "yMaxM": { "type": "number" } } }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "vertices", "faces"],
+              "properties": {
+                "kind": { "const": "polyhedron3d" },
+                "vertices": { "type": "array", "minItems": 4, "maxItems": 20000, "items": { "type": "array", "prefixItems": [{ "type": "number" }, { "type": "number" }, { "type": "number" }], "minItems": 3, "maxItems": 3 } },
+                "faces": { "type": "array", "minItems": 4, "maxItems": 20000, "items": { "type": "array", "minItems": 3, "maxItems": 2048, "items": { "type": "integer", "minimum": 0 } } }
+              }
+            }
+          ]
+        },
+        "properties": { "$ref": "#/$defs/physicalProperties" },
+        "extensions": { "$ref": "#/$defs/extensions" }
+      },
+      "allOf": [
+        { "if": { "properties": { "kind": { "const": "layer" } }, "required": ["kind"] }, "then": { "required": ["stratigraphicOrder", "topInterfaceId", "bottomInterfaceId"] } }
+      ]
+    },
+    "referenceDensity": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["state", "value", "unit"], "properties": { "state": { "const": "known" }, "value": { "type": "number", "exclusiveMinimum": 0 }, "unit": { "const": "kg/m3" } } },
+        { "type": "object", "additionalProperties": false, "required": ["state", "unit"], "properties": { "state": { "const": "unknown" }, "unit": { "const": "kg/m3" } } }
+      ]
+    },
+    "velocityState": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["state", "value", "unit"], "properties": { "state": { "const": "known" }, "value": { "type": "number", "exclusiveMinimum": 0 }, "unit": { "const": "m/s" } } },
+        { "type": "object", "additionalProperties": false, "required": ["state", "unit"], "properties": { "state": { "const": "unknown" }, "unit": { "const": "m/s" } } }
+      ]
+    },
+    "modulusState": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["state", "value", "unit"], "properties": { "state": { "const": "known" }, "value": { "type": "number", "exclusiveMinimum": 0 }, "unit": { "const": "Pa" } } },
+        { "type": "object", "additionalProperties": false, "required": ["state", "unit"], "properties": { "state": { "const": "unknown" }, "unit": { "const": "Pa" } } }
+      ]
+    },
+    "poissonState": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["state", "value", "unit"], "properties": { "state": { "const": "known" }, "value": { "type": "number", "exclusiveMinimum": -1, "exclusiveMaximum": 0.5 }, "unit": { "const": "1" } } },
+        { "type": "object", "additionalProperties": false, "required": ["state", "unit"], "properties": { "state": { "const": "unknown" }, "unit": { "const": "1" } } }
+      ]
+    },
+    "density": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["state", "basis", "value", "unit"], "properties": { "state": { "const": "known" }, "basis": { "const": "contrast" }, "value": { "type": "number" }, "unit": { "const": "kg/m3" } } },
+        { "type": "object", "additionalProperties": false, "required": ["state", "basis", "unit"], "properties": { "state": { "const": "unknown" }, "basis": { "const": "contrast" }, "unit": { "const": "kg/m3" } } },
+        { "type": "object", "additionalProperties": false, "required": ["state", "basis", "value", "unit", "referenceDensity"], "properties": { "state": { "const": "known" }, "basis": { "const": "absolute" }, "value": { "type": "number", "exclusiveMinimum": 0 }, "unit": { "const": "kg/m3" }, "referenceDensity": { "$ref": "#/$defs/referenceDensity" } } },
+        { "type": "object", "additionalProperties": false, "required": ["state", "basis", "unit", "referenceDensity"], "properties": { "state": { "const": "unknown" }, "basis": { "const": "absolute" }, "unit": { "const": "kg/m3" }, "referenceDensity": { "$ref": "#/$defs/referenceDensity" } } }
+      ]
+    },
+    "susceptibility": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["state", "value", "unit"], "properties": { "state": { "const": "known" }, "value": { "type": "number" }, "unit": { "const": "SI" } } },
+        { "type": "object", "additionalProperties": false, "required": ["state", "unit"], "properties": { "state": { "const": "unknown" }, "unit": { "const": "SI" } } }
+      ]
+    },
+    "remanence": {
+      "oneOf": [
+        { "type": "object", "additionalProperties": false, "required": ["state", "magnitude_A_per_m", "inclination_deg", "declination_deg", "orientationReference"], "properties": { "state": { "const": "known" }, "magnitude_A_per_m": { "type": "number", "minimum": 0 }, "inclination_deg": { "type": "number", "minimum": -90, "maximum": 90 }, "declination_deg": { "type": "number", "minimum": -180, "maximum": 180 }, "orientationReference": { "const": "geographic_north_inclination_positive_down" } } },
+        { "type": "object", "additionalProperties": false, "required": ["state"], "properties": { "state": { "const": "unknown" } } }
+      ]
+    },
+    "physicalProperties": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "density": { "$ref": "#/$defs/density" },
+        "magneticSusceptibility": { "$ref": "#/$defs/susceptibility" },
+        "remanence": { "$ref": "#/$defs/remanence" },
+        "seismic": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "pWaveVelocity": { "$ref": "#/$defs/velocityState" },
+            "sWaveVelocity": { "$ref": "#/$defs/velocityState" }
+          }
+        },
+        "elastic": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "bulkModulus": { "$ref": "#/$defs/modulusState" },
+            "shearModulus": { "$ref": "#/$defs/modulusState" },
+            "youngModulus": { "$ref": "#/$defs/modulusState" },
+            "poissonRatio": { "$ref": "#/$defs/poissonState" }
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["createdAt", "sourceApplication", "sourceVersion"],
+      "properties": {
+        "createdAt": { "type": "string", "format": "date-time" },
+        "sourceApplication": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "sourceVersion": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "sourceModelId": { "$ref": "#/$defs/id" },
+        "sourceHashes": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "sha256"],
+            "properties": { "name": { "type": "string", "minLength": 1, "maxLength": 256 }, "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" } }
+          }
+        },
+        "transformations": { "type": "array", "maxItems": 128, "items": { "type": "string", "minLength": 1, "maxLength": 512 } }
+      }
+    },
+    "extensions": {
+      "type": "object",
+      "maxProperties": 64,
+      "propertyNames": { "pattern": "^[a-z0-9][a-z0-9._-]{1,127}:[A-Za-z0-9._-]{1,128}$" }
+    }
+  }
+}

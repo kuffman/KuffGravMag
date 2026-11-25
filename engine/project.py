@@ -14,6 +14,35 @@ from engine.survey import SurveyProfile
 
 
 SCHEMA_VERSION = 2
+MAX_SHARED_METADATA_BYTES = 4 * 1024 * 1024
+MAX_BODY_EXCHANGE_BYTES = 256 * 1024
+
+
+def _bounded_json_copy(value, label, max_bytes):
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ValueError(f"{label} must contain finite JSON data") from exc
+    if len(encoded) > max_bytes:
+        raise ValueError(f"{label} exceeds the {max_bytes // 1024} KB limit")
+    try:
+        decoded = json.loads(encoded)
+    except (json.JSONDecodeError, RecursionError) as exc:
+        raise ValueError(f"{label} is not bounded JSON data") from exc
+    stack = [(decoded, 0)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > 24:
+            raise ValueError(f"{label} exceeds the maximum JSON nesting depth of 24")
+        if isinstance(current, dict):
+            if len(current) > 2048:
+                raise ValueError(f"{label} contains too many object fields")
+            stack.extend((child, depth + 1) for child in current.values())
+        elif isinstance(current, list):
+            if len(current) > 20_000:
+                raise ValueError(f"{label} contains too many array items")
+            stack.extend((child, depth + 1) for child in current)
+    return decoded
 
 
 def _bound_to_json(value):
@@ -44,7 +73,7 @@ def _bound_from_json(value, default):
 
 
 def _body_to_dict(body):
-    return {
+    result = {
         "name": str(body.name),
         "x": np.asarray(body.x, dtype=np.float64).tolist(),
         "z": np.asarray(body.z, dtype=np.float64).tolist(),
@@ -58,10 +87,25 @@ def _body_to_dict(body):
         "strike_y_max_m": _bound_to_json(body.y_max),
         "color": str(body.color),
     }
+    exchange = {}
+    for key, attribute in (
+        ("id", "exchange_id"), ("kind", "exchange_kind"),
+        ("stratigraphicOrder", "exchange_stratigraphic_order"),
+        ("topInterfaceId", "exchange_top_interface_id"),
+        ("bottomInterfaceId", "exchange_bottom_interface_id"),
+        ("properties", "exchange_properties"), ("extensions", "exchange_extensions"),
+        ("originalRing", "exchange_original_ring"),
+    ):
+        if hasattr(body, attribute):
+            exchange[key] = getattr(body, attribute)
+    if exchange:
+        result["exchange"] = _bounded_json_copy(exchange, "Body shared-model metadata", MAX_BODY_EXCHANGE_BYTES)
+    return result
 
 
 def project_to_dict(
-    bodies, field_params, observations=None, *, survey_profile=None, processing_steps=None
+    bodies, field_params, observations=None, *, survey_profile=None, processing_steps=None,
+    shared_model_metadata=None,
 ):
     """Return a JSON-serializable project snapshot of all model settings."""
     observations = observations or {}
@@ -82,7 +126,7 @@ def project_to_dict(
     if any(not isinstance(step, dict) for step in steps):
         raise ValueError("processing_steps must be a sequence of objects")
     json.dumps(steps, allow_nan=False)
-    return {
+    payload = {
         "schema_version": SCHEMA_VERSION,
         "field_params": {str(key): float(value) for key, value in field_params.items()},
         "observations": clean_observations,
@@ -90,9 +134,15 @@ def project_to_dict(
         "survey_profile": survey_record,
         "processing_steps": steps,
     }
+    if shared_model_metadata is not None:
+        payload["shared_model_metadata"] = _bounded_json_copy(
+            shared_model_metadata, "Shared geological model metadata", MAX_SHARED_METADATA_BYTES
+        )
+    return payload
 
 
-def save_project(filename, bodies, field_params, observations=None, *, survey_profile=None, processing_steps=None):
+def save_project(filename, bodies, field_params, observations=None, *, survey_profile=None, processing_steps=None,
+                 shared_model_metadata=None):
     """Atomically write a project JSON file with no non-standard NaN/Infinity tokens."""
     payload = project_to_dict(
         bodies,
@@ -100,6 +150,7 @@ def save_project(filename, bodies, field_params, observations=None, *, survey_pr
         observations,
         survey_profile=survey_profile,
         processing_steps=processing_steps,
+        shared_model_metadata=shared_model_metadata,
     )
     path = Path(filename)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,7 +179,8 @@ def save_project(filename, bodies, field_params, observations=None, *, survey_pr
 
 
 def project_sha256(
-    bodies, field_params, observations=None, *, survey_profile=None, processing_steps=None
+    bodies, field_params, observations=None, *, survey_profile=None, processing_steps=None,
+    shared_model_metadata=None,
 ):
     """Return a stable SHA-256 fingerprint of the canonical project inputs."""
     payload = project_to_dict(
@@ -137,6 +189,7 @@ def project_sha256(
         observations,
         survey_profile=survey_profile,
         processing_steps=processing_steps,
+        shared_model_metadata=shared_model_metadata,
     )
     canonical = json.dumps(
         payload,
@@ -177,7 +230,7 @@ def _body_from_dict(data):
     # Missing strike_mode is an old-project record. Body2D resolves only its
     # historical (0, 0) sentinel to infinite strike; explicit mode is honored.
     mode = data.get("strike_mode")
-    return Body2D(
+    body = Body2D(
         data.get("name", "Body"), x, z,
         density=data.get("density", 300.0),
         k_succ=data.get("susceptibility", data.get("k_succ", 0.02)),
@@ -187,6 +240,32 @@ def _body_from_dict(data):
         y_min=y_min, y_max=y_max, color=data.get("color", "tab:blue"),
         strike_mode=mode,
     )
+    exchange = data.get("exchange")
+    if exchange is not None:
+        exchange = _bounded_json_copy(exchange, "Body shared-model metadata", MAX_BODY_EXCHANGE_BYTES)
+        allowed = {"id", "kind", "stratigraphicOrder", "topInterfaceId", "bottomInterfaceId", "properties", "extensions", "originalRing"}
+        if not isinstance(exchange, dict) or set(exchange) - allowed:
+            raise ValueError("Body shared-model metadata has unsupported fields")
+        if not isinstance(exchange.get("id"), str) or not exchange["id"] or len(exchange["id"]) > 128:
+            raise ValueError("Body shared-model metadata requires a stable identifier")
+        if exchange.get("kind") not in ("layer", "body"):
+            raise ValueError("Body shared-model metadata has an invalid geometry kind")
+        if not isinstance(exchange.get("properties", {}), dict) or not isinstance(exchange.get("extensions", {}), dict):
+            raise ValueError("Body shared-model properties and extensions must be objects")
+        if exchange.get("originalRing") is not None and not isinstance(exchange["originalRing"], list):
+            raise ValueError("Body shared-model original ring must be an array")
+        body.exchange_id = exchange["id"]
+        body.exchange_kind = exchange["kind"]
+        if "stratigraphicOrder" in exchange:
+            body.exchange_stratigraphic_order = exchange["stratigraphicOrder"]
+        if "topInterfaceId" in exchange:
+            body.exchange_top_interface_id = exchange["topInterfaceId"]
+        if "bottomInterfaceId" in exchange:
+            body.exchange_bottom_interface_id = exchange["bottomInterfaceId"]
+        body.exchange_properties = exchange.get("properties", {})
+        body.exchange_extensions = exchange.get("extensions", {})
+        body.exchange_original_ring = exchange.get("originalRing")
+    return body
 
 
 def load_project(source):
@@ -222,7 +301,14 @@ def load_project(source):
     if not isinstance(processing_steps, list) or any(not isinstance(step, dict) for step in processing_steps):
         raise ValueError("Project processing_steps must be a list of objects")
     json.dumps(processing_steps, allow_nan=False)
-    return {
+    shared_model_metadata = data.get("shared_model_metadata")
+    if shared_model_metadata is not None:
+        if not isinstance(shared_model_metadata, dict):
+            raise ValueError("Shared geological model metadata must be an object")
+        shared_model_metadata = _bounded_json_copy(
+            shared_model_metadata, "Shared geological model metadata", MAX_SHARED_METADATA_BYTES
+        )
+    result = {
         "schema_version": SCHEMA_VERSION,
         "bodies": [_body_from_dict(body) for body in body_data],
         "field_params": field_params,
@@ -230,3 +316,6 @@ def load_project(source):
         "survey_profile": survey_profile,
         "processing_steps": processing_steps,
     }
+    if shared_model_metadata is not None:
+        result["shared_model_metadata"] = shared_model_metadata
+    return result

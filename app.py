@@ -2,6 +2,7 @@ import sys
 import csv
 import hashlib
 import io
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -20,6 +21,7 @@ from matplotlib.figure import Figure
 from scipy.interpolate import griddata
 
 from engine.forward import Body2D, PotentialField2D
+from engine.geological_exchange import export_kgm_model, import_shared_model, validate_shared_model
 from engine.report import generate_pdf_report
 from engine.grid import extract_profile_from_xyz
 from engine.inversion import invert_body_parameters
@@ -494,6 +496,7 @@ class MainWindow(QMainWindow):
         self._loading_project = False
         self.project_path = None
         self.project_dirty = False
+        self.shared_model_metadata = None
         self.grid_source_path = None
         self.grid_source_name = None
         self.grid_attachment_name = None
@@ -777,6 +780,14 @@ class MainWindow(QMainWindow):
         import_grid_action.triggered.connect(self.import_3d_grid_csv)
         file_menu.addAction(import_grid_action)
 
+        file_menu.addSeparator()
+        self.import_shared_model_action = QAction("Import Shared Geological Model…", self)
+        self.import_shared_model_action.triggered.connect(self.import_shared_geological_model)
+        file_menu.addAction(self.import_shared_model_action)
+        self.export_shared_model_action = QAction("Export Shared Geological Model…", self)
+        self.export_shared_model_action.triggered.connect(self.export_shared_geological_model)
+        file_menu.addAction(self.export_shared_model_action)
+
         self.interpret_grid_action = QAction("Interpret Regular 3D Grid (XYZ)…", self)
         self.interpret_grid_action.triggered.connect(self.open_grid_interpretation)
         file_menu.addAction(self.interpret_grid_action)
@@ -935,6 +946,7 @@ class MainWindow(QMainWindow):
                 self._current_observations(),
                 survey_profile=self.survey_profile,
                 processing_steps=self.processing_steps,
+                shared_model_metadata=self.shared_model_metadata,
             )
         except Exception as exc:
             self.statusBar().showMessage(f"Recovery snapshot failed: {exc}")
@@ -971,6 +983,7 @@ class MainWindow(QMainWindow):
         self._loading_project = True
         try:
             self.bodies = project["bodies"]
+            self.shared_model_metadata = project.get("shared_model_metadata")
             fields = project["field_params"]
             for widget, key, default in (
                 (self.spin_F, "F", 48_000.0),
@@ -1469,6 +1482,7 @@ class MainWindow(QMainWindow):
             self._current_observations(),
             survey_profile=self.survey_profile,
             processing_steps=self.processing_steps,
+            shared_model_metadata=self.shared_model_metadata,
         )
         if path.suffix.lower() == ".kgmproj":
             save_project_bundle(path, project_data, self.project_attachments)
@@ -1480,6 +1494,7 @@ class MainWindow(QMainWindow):
                 self._current_observations(),
                 survey_profile=self.survey_profile,
                 processing_steps=self.processing_steps,
+                shared_model_metadata=self.shared_model_metadata,
             )
         self.project_path = path
         self._mark_project_clean()
@@ -1504,6 +1519,71 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Project Loaded", f"Loaded project from {file_path}")
         except Exception as exc:
             QMessageBox.critical(self, "Project Load Error", f"Could not load project:\n{exc}")
+
+    def import_shared_geological_model(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Import Shared Geological Model", "",
+            "Shared geological models (*.kgsm.json *.json);;JSON files (*.json)",
+        )
+        if not file_path:
+            return
+        try:
+            result = import_shared_model(Path(file_path))
+            if not result.bodies:
+                raise ValueError("Shared geological model contains no supported 2D polygons")
+            self._loading_project = True
+            try:
+                self.bodies = list(result.bodies)
+                self.shared_model_metadata = result.model_metadata
+                if result.magnetic_field is not None:
+                    field = result.magnetic_field
+                    for widget, value in (
+                        (self.spin_F, field["intensity_nT"]),
+                        (self.spin_Inc, field["inclination_deg"]),
+                        (self.spin_Dec, field["declination_deg"]),
+                        (self.spin_alpha, ((field["profileAzimuth_deg"] + 180.0) % 360.0) - 180.0),
+                    ):
+                        widget.blockSignals(True)
+                        widget.setValue(value)
+                        widget.blockSignals(False)
+                self.active_body_idx = 0
+                self.refresh_body_list()
+                self.load_active_body_props()
+                self.recalculate_and_plot()
+            finally:
+                self._loading_project = False
+            self.project_path = None
+            self._mark_project_dirty()
+            self.refresh_project_explorer()
+            detail = "\n\n".join(result.warnings) if result.warnings else "No conversion warnings."
+            QMessageBox.information(
+                self, "Shared Geological Model Imported",
+                f"Imported {len(result.bodies)} supported polygon body/bodies. Existing observed data remains attached to the project.\n\n{detail}",
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Shared Model Import Error", f"Could not import the shared geological model:\n{exc}")
+
+    def export_shared_geological_model(self):
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Shared Geological Model", "KuffGravMag_Shared_Model.kgsm.json",
+            "Shared geological model (*.kgsm.json);;JSON file (*.json)",
+        )
+        if not file_path:
+            return
+        try:
+            field = {
+                "intensity_nT": self.spin_F.value(),
+                "inclination_deg": self.spin_Inc.value(),
+                "declination_deg": self.spin_Dec.value(),
+                "profileAzimuth_deg": self.spin_alpha.value() % 360.0,
+            }
+            model, warnings = export_kgm_model(self.bodies, field, model_metadata=self.shared_model_metadata)
+            validate_shared_model(model)
+            Path(file_path).write_text(json.dumps(model, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+            detail = "\n\n".join(warnings) if warnings else "No conversion warnings."
+            QMessageBox.information(self, "Shared Geological Model Exported", f"Saved {file_path}.\n\n{detail}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Shared Model Export Error", f"Could not export the shared geological model:\n{exc}")
 
     def closeEvent(self, event):
         if self.project_dirty and self._recovery_enabled:
