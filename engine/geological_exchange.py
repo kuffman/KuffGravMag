@@ -670,6 +670,37 @@ def _body_ring(body: Body2D, vertical: Mapping[str, Any]) -> list[list[float]]:
     return result
 
 
+def _ring_matches_imported_geometry(original_ring, exported_ring, vertical) -> bool:
+    """Compare a round-tripped ring within arithmetic precision of its datum transform."""
+    if not isinstance(original_ring, (list, tuple)) or len(original_ring) != len(exported_ring):
+        return False
+    surface = float(vertical["groundSurfaceCoordinateM"])
+    for original_point, exported_point in zip(original_ring, exported_ring):
+        if (
+            not isinstance(original_point, (list, tuple))
+            or not isinstance(exported_point, (list, tuple))
+            or len(original_point) != 2
+            or len(exported_point) != 2
+        ):
+            return False
+        for axis, (original_value, exported_value) in enumerate(
+            zip(original_point, exported_point)
+        ):
+            try:
+                original_value = float(original_value)
+                exported_value = float(exported_value)
+            except (TypeError, ValueError, OverflowError):
+                return False
+            if not math.isfinite(original_value) or not math.isfinite(exported_value):
+                return False
+            precision = max(math.ulp(original_value), math.ulp(exported_value))
+            if axis == 1:
+                precision = max(precision, math.ulp(surface))
+            if abs(original_value - exported_value) > 4.0 * precision:
+                return False
+    return True
+
+
 def export_kgm_model(
     bodies,
     magnetic_field: Mapping[str, float] | None,
@@ -700,7 +731,11 @@ def export_kgm_model(
     for index, body in enumerate(bodies):
         ring = _body_ring(body, vertical)
         original_ring = getattr(body, "exchange_original_ring", None)
-        geometry_unchanged = original_ring is not None and ring == original_ring
+        geometry_unchanged = original_ring is not None and _ring_matches_imported_geometry(
+            original_ring, ring, vertical,
+        )
+        if geometry_unchanged:
+            ring = copy.deepcopy(original_ring)
         original_kind = getattr(body, "exchange_kind", None)
         kind = original_kind if geometry_unchanged and original_kind in ("layer", "body") else "body"
         entity = {

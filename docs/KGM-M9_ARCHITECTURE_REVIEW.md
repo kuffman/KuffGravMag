@@ -74,3 +74,7 @@ Verified on 2026-11-25 before PR submission:
 - Direct cross-app smoke passed: Python export → TypeScript import/export → Python re-import preserved all three layers, the 500 kg/m³ density contrast, and the 1500 m/s P-wave value. Seismic Lab emitted its explicit final-half-space solver warning.
 - Final preservation check matched both original checkout HEADs and dirty path lists to the recorded pre-work baseline. The two KuffGravMag synthetic CSV SHA-256 values are unchanged.
 - These checks use synthetic data only. They do not establish field-data validity, geological interpretation, or joint-inversion validity. Hosted pull-request CI remains a separate check after the branches are submitted.
+
+### PR #12 round-trip precision regression
+
+The shared-model exporter compares reprojected vertex coordinates using a four-ULP tolerance that accounts for the vertical datum value. If the ring is unchanged within floating-point roundoff, it emits the exact imported ring and retains layer kind, stratigraphic order, and interface references. A larger vertex edit still exports as a body with the existing geometry-changed warning. Regression coverage exercises positive-up datum 1.1 m, exact ring preservation through native project save/load, and a real geometry edit.

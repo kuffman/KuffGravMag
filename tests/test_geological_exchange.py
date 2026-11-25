@@ -109,6 +109,62 @@ def test_shared_model_round_trips_and_native_project_keeps_interop_metadata():
     assert restored_export["geometry"]["entities"][1]["geometry"]["ring"] == exported["geometry"]["entities"][1]["geometry"]["ring"]
 
 
+def test_layer_round_trip_preserves_imported_ring_across_float_datum_conversion():
+    model = json.loads(FIXTURE.read_text())
+    vertical = model["coordinateReference"]["vertical"]
+    surface = 1.1
+    vertical.update({"positiveDirection": "up", "groundSurfaceCoordinateM": surface})
+
+    def transform(value):
+        # Keep the valid source coordinate -0.9 exactly as written. The same
+        # point converts to depth 2.0 and back to -0.8999999999999999.
+        return -0.9 if value == -2.0 else surface + value
+
+    for interface in model["geometry"]["interfaces"]:
+        interface["coordinates"] = [[x, transform(z)] for x, z in interface["coordinates"]]
+    for entity in model["geometry"]["entities"]:
+        entity["geometry"]["ring"] = [
+            [x, transform(z)] for x, z in entity["geometry"]["ring"]
+        ]
+    expected_entities = copy.deepcopy(model["geometry"]["entities"])
+
+    imported = import_shared_model(model)
+    exported, warnings = export_kgm_model(
+        imported.bodies, imported.magnetic_field, model_metadata=imported.model_metadata,
+    )
+
+    assert not warnings
+    for expected, actual in zip(expected_entities, exported["geometry"]["entities"]):
+        assert actual["kind"] == "layer"
+        assert actual["stratigraphicOrder"] == expected["stratigraphicOrder"]
+        assert actual["topInterfaceId"] == expected["topInterfaceId"]
+        assert actual["bottomInterfaceId"] == expected["bottomInterfaceId"]
+        assert actual["geometry"]["ring"] == expected["geometry"]["ring"]
+
+    native = project_to_dict(
+        imported.bodies,
+        {"F": 48000, "Inc": 60, "Dec": 0, "Alpha": 0},
+        shared_model_metadata=imported.model_metadata,
+    )
+    restored = load_project(native)
+    restored_export, restored_warnings = export_kgm_model(
+        restored["bodies"], imported.magnetic_field,
+        model_metadata=restored["shared_model_metadata"],
+    )
+    assert not restored_warnings
+    assert [entity["geometry"]["ring"] for entity in restored_export["geometry"]["entities"]] == [
+        entity["geometry"]["ring"] for entity in expected_entities
+    ]
+
+    changed = import_shared_model(model)
+    changed.bodies[0].z[2:4] += 0.1
+    changed_export, changed_warnings = export_kgm_model(
+        changed.bodies, changed.magnetic_field, model_metadata=changed.model_metadata,
+    )
+    assert changed_export["geometry"]["entities"][0]["kind"] == "body"
+    assert any("polygon geometry changed after import" in warning for warning in changed_warnings)
+
+
 def test_explicit_density_reference_and_positive_down_datum_are_mapped_losslessly():
     model = json.loads(FIXTURE.read_text())
     first = model["geometry"]["entities"][0]["properties"]["density"]
