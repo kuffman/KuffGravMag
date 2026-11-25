@@ -42,6 +42,7 @@ from ui.project_recovery import (
 )
 from ui.studio_workspace import StudioWorkspace
 from ui.studio_workflow import prepare_model_observations
+from ui.academic_lab import AcademicLabDialog
 
 COLOR_OPTIONS = ['tab:blue', 'tab:orange', 'tab:green', 'tab:red', 'tab:purple', 'tab:brown']
 
@@ -800,6 +801,7 @@ class MainWindow(QMainWindow):
             "import_observations": self.import_observed_csv,
             "process_survey": self.open_survey_processing,
             "interpret_grid": self.open_grid_interpretation,
+            "academic_lab": self.open_academic_lab,
             "add_body": self.add_body,
             "invert_gravity": lambda: self.run_inversion("gravity"),
             "invert_magnetic": lambda: self.run_inversion("magnetics"),
@@ -1181,6 +1183,10 @@ class MainWindow(QMainWindow):
             self._mark_project_dirty()
         except Exception as exc:
             QMessageBox.critical(self, "Grid interpretation input error", str(exc))
+
+    def open_academic_lab(self):
+        dialog = AcademicLabDialog(self)
+        dialog.exec()
 
     def import_observed_csv(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Import Observed Profile", "",

@@ -22,6 +22,22 @@ def smoke_web():
         raise RuntimeError(f"Web app raised during its first render:\n{messages}")
     if not any("KuffGravMag" in str(item.value) for item in app.title):
         raise RuntimeError("The web app title did not render")
+    lab_errors = [
+        str(item.value) for item in app.error
+        if "Synthetic experiment could not be generated" in str(item.value)
+    ]
+    if lab_errors:
+        raise RuntimeError(f"The Academic Lab web panel failed to render: {lab_errors}")
+    if not any(
+        "Download seeded synthetic experiment CSV" in str(item.label)
+        for item in app.get("download_button")
+    ):
+        raise RuntimeError("The Academic Lab seeded CSV download did not render")
+    if not any(
+        "Equation: Uniform sphere" in str(item.value)
+        for item in app.caption
+    ):
+        raise RuntimeError("The Academic Lab did not show its analytical model equation")
 
     profile = SurveyProfile.from_csv(
         b"""distance_m,elevation_m,gravity_mgal

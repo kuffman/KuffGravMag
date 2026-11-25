@@ -10,6 +10,14 @@ from scipy.interpolate import griddata
 
 # Core computational backend engine imports
 from engine.forward import Body2D, PotentialField2D
+from engine.academic import (
+    MODEL_EQUATIONS,
+    MODEL_LIMITATIONS,
+    export_teaching_experiment_csv,
+    invert_sphere_gravity_density_depth,
+    simulate_teaching_experiment,
+    sphere_density_depth_tradeoff,
+)
 from engine.inversion import invert_body_parameters
 from engine.grid import extract_profile_from_xyz
 from engine.report import generate_pdf_report
@@ -506,9 +514,202 @@ if st.sidebar.button("🚀 Run Magnetic Inversion"):
 col_left, col_right = st.columns([1, 1.2])
 
 with col_left:
-    tab_model, tab_map, tab_grid = st.tabs([
-        "Subsurface 2.5D Model", "3D Map Transect Slicer", "Grid Interpretation"
+    tab_model, tab_map, tab_grid, tab_lab = st.tabs([
+        "Subsurface 2.5D Model", "3D Map Transect Slicer", "Grid Interpretation",
+        "Academic & Research Lab",
     ])
+
+    with tab_lab:
+        st.markdown("### Synthetic gravity and magnetic experiments")
+        st.warning(
+            "Synthetic teaching data only. The classroom coordinate anchor is EPSG:32630 near "
+            "3°W, 6°N; it is not a measured Ghana survey or a claim about local geology."
+        )
+        lab_model, lab_field = st.columns(2)
+        model_kind = lab_model.selectbox(
+            "Analytical source", ["sphere", "cylinder", "dyke"],
+            format_func={"sphere": "Sphere", "cylinder": "Infinite horizontal cylinder",
+                         "dyke": "Infinite-strike vertical dyke"}.get,
+            key="academic_model_kind",
+        )
+        field_type = lab_field.selectbox(
+            "Field response", ["gravity", "magnetics"],
+            format_func={"gravity": "Gravity", "magnetics": "Magnetic total-field anomaly"}.get,
+            key="academic_field_type",
+        )
+        geom_a, geom_b, geom_c = st.columns(3)
+        center_depth = geom_a.number_input(
+            "Circle centre depth (m)", min_value=1.0, value=420.0, step=10.0,
+            key="academic_center_depth",
+        )
+        radius = geom_b.number_input(
+            "Sphere / cylinder radius (m)", min_value=1.0, value=120.0, step=10.0,
+            key="academic_radius",
+        )
+        density = geom_c.number_input(
+            "Density contrast (kg/m³)", min_value=-5000.0, max_value=5000.0,
+            value=550.0, step=25.0, key="academic_density",
+        )
+        dyke_a, dyke_b, dyke_c = st.columns(3)
+        dyke_width = dyke_a.number_input(
+            "Dyke width (m)", min_value=1.0, value=150.0, step=10.0,
+            key="academic_dyke_width",
+        )
+        dyke_top = dyke_b.number_input(
+            "Dyke top depth (m)", min_value=0.0, value=180.0, step=10.0,
+            key="academic_dyke_top",
+        )
+        dyke_bottom = dyke_c.number_input(
+            "Dyke bottom depth (m)", min_value=1.0, value=600.0, step=10.0,
+            key="academic_dyke_bottom",
+        )
+        mag_a, mag_b, mag_c, mag_d = st.columns(4)
+        lab_field_strength = mag_a.number_input(
+            "Ambient field (nT)", min_value=10000.0, max_value=70000.0,
+            value=49000.0, step=500.0, key="academic_field_strength",
+        )
+        lab_field_inc = mag_b.number_input(
+            "Field inclination (deg)", min_value=-90.0, max_value=90.0,
+            value=8.0, step=1.0, key="academic_field_inc",
+        )
+        lab_field_dec = mag_c.number_input(
+            "Field declination (deg)", min_value=-180.0, max_value=180.0,
+            value=-2.0, step=1.0, key="academic_field_dec",
+        )
+        lab_alpha = mag_d.number_input(
+            "Profile azimuth (deg)", min_value=-180.0, max_value=180.0,
+            value=90.0, step=1.0, key="academic_alpha",
+        )
+        mag_e, mag_f, mag_g, mag_h = st.columns(4)
+        lab_susceptibility = mag_e.number_input(
+            "Susceptibility (SI)", min_value=-1.0, max_value=1.0,
+            value=0.03, step=0.005, format="%.5f", key="academic_susceptibility",
+        )
+        lab_remanence = mag_f.number_input(
+            "Remanence (A/m)", min_value=0.0, max_value=100.0,
+            value=0.0, step=0.1, key="academic_remanence",
+        )
+        lab_rem_inc = mag_g.number_input(
+            "Remanent inclination (deg)", min_value=-90.0, max_value=90.0,
+            value=20.0, step=1.0, key="academic_rem_inc",
+        )
+        lab_rem_dec = mag_h.number_input(
+            "Remanent declination (deg)", min_value=-180.0, max_value=180.0,
+            value=30.0, step=1.0, key="academic_rem_dec",
+        )
+        exp_a, exp_b, exp_c = st.columns(3)
+        noise_sigma = exp_a.number_input(
+            "Independent Gaussian noise σ (mGal / nT)", min_value=0.0,
+            value=0.04, step=0.01, format="%.4f", key="academic_noise_sigma",
+        )
+        seed = exp_b.number_input(
+            "Reproducible random seed", min_value=0, max_value=2147483647,
+            value=20261124, step=1, key="academic_seed",
+        )
+        station_count = exp_c.number_input(
+            "Profile stations", min_value=11, max_value=1001, value=201, step=10,
+            key="academic_station_count",
+        )
+        alternative_depth = st.number_input(
+            "Deeper alternative sphere centre depth for the density-depth experiment (m)",
+            min_value=5.0, value=650.0, step=10.0, key="academic_alternative_depth",
+        )
+        x_lab = np.linspace(-1200.0, 1200.0, int(station_count))
+        model_parameters = {
+            "center_x_m": 0.0,
+            "center_depth_m": center_depth,
+            "radius_m": radius,
+            "density_contrast_kg_m3": density,
+            "dyke_width_m": dyke_width,
+            "dyke_top_m": dyke_top,
+            "dyke_bottom_m": dyke_bottom,
+            "field_strength_nT": lab_field_strength,
+            "field_inclination_deg": lab_field_inc,
+            "field_declination_deg": lab_field_dec,
+            "profile_azimuth_deg": lab_alpha,
+            "susceptibility_si": lab_susceptibility,
+            "remanence_a_m": lab_remanence,
+            "remanent_inclination_deg": lab_rem_inc,
+            "remanent_declination_deg": lab_rem_dec,
+        }
+        try:
+            experiment = simulate_teaching_experiment(
+                model_kind,
+                field_type,
+                x_m=x_lab,
+                noise_sigma=float(noise_sigma),
+                seed=int(seed),
+                **model_parameters,
+            )
+            st.caption(
+                f"Equation: {MODEL_EQUATIONS[f'{model_kind}_{field_type}']} "
+                "All source geometry and responses are synthetic."
+            )
+            fig_lab, ax_lab = plt.subplots(figsize=(8, 4.8))
+            ax_lab.plot(x_lab, experiment.clean_response, color="tab:blue", label="Noise-free model")
+            ax_lab.plot(x_lab, experiment.observed_response, ".", color="tab:orange",
+                        markersize=4, label="Synthetic observations")
+            if model_kind == "sphere" and field_type == "gravity":
+                alt_depth = max(
+                    float(alternative_depth),
+                    float(center_depth) + 1.0e-3,
+                    float(radius) + 1.0e-3,
+                )
+                tradeoff = sphere_density_depth_tradeoff(
+                    x_lab,
+                    radius_m=float(radius),
+                    shallow_density_kg_m3=float(density),
+                    shallow_depth_m=float(center_depth),
+                    deep_depth_m=alt_depth,
+                )
+                ax_lab.plot(
+                    x_lab, tradeoff["deep_response_mgal"], "--", color="tab:green",
+                    label="Deeper sphere with adjusted density (same centre station)",
+                )
+                fit_density = float(density) * 0.7
+                if abs(fit_density) < 1.0:
+                    fit_density = 200.0
+                initial_depth = min(float(center_depth) + float(radius), 9_000.0)
+                fit = invert_sphere_gravity_density_depth(
+                    x_lab,
+                    experiment.observed_response,
+                    radius_m=float(radius),
+                    observation_sigma_mgal=max(float(noise_sigma), 0.05),
+                    initial_density_kg_m3=fit_density,
+                    initial_depth_m=max(initial_depth, float(radius) + 0.1),
+                )
+                uncertainty = (
+                    f"ρ σ≈{fit.standard_errors['density_kg_m3']:.3g} kg/m³; "
+                    f"depth σ≈{fit.standard_errors['center_depth_m']:.3g} m"
+                    if fit.standard_errors else "local uncertainty unavailable (rank deficient or no residual degrees of freedom)"
+                )
+                st.write(
+                    f"Sphere inversion: density {fit.density_kg_m3:.2f} kg/m³; "
+                    f"depth {fit.center_depth_m:.2f} m; Jacobian rank "
+                    f"{fit.numerical_rank}/2; identifiable={fit.identifiable}; {uncertainty}."
+                )
+                st.write(
+                    f"The deeper sphere at {alt_depth:.1f} m matches the center station within "
+                    f"{abs(tradeoff['single_station_difference_mgal']):.3g} mGal; "
+                    f"the profile relative RMS difference is {tradeoff['profile_relative_rms_difference']:.3f}."
+                )
+            ax_lab.set_xlabel("Profile distance X (m)")
+            ax_lab.set_ylabel(f"Response ({experiment.response_units})")
+            ax_lab.set_title(f"Synthetic {model_kind} {field_type} · seed {experiment.seed}")
+            ax_lab.grid(True, alpha=0.25)
+            ax_lab.legend(loc="best")
+            st.pyplot(fig_lab)
+            plt.close(fig_lab)
+            st.download_button(
+                "Download seeded synthetic experiment CSV",
+                data=export_teaching_experiment_csv(experiment),
+                file_name="KuffGravMag_Synthetic_Experiment.csv",
+                mime="text/csv",
+                key="academic_lab_export",
+            )
+            st.caption("Limitations: " + " ".join(MODEL_LIMITATIONS))
+        except Exception as exc:
+            st.error(f"Synthetic experiment could not be generated: {exc}")
 
     with tab_map:
         if data_import_type == "3D Grid Map Transect (XYZ)" and grid_spatial_data is not None:

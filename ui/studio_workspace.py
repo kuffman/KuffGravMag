@@ -48,6 +48,7 @@ class StudioWorkspace(QWidget):
             ("Import observed profile…", "import_observations"),
             ("Process survey profile…", "process_survey"),
             ("Interpret regular grid…", "interpret_grid"),
+            ("Academic & Research Laboratory…", "academic_lab"),
             ("Add model body", "add_body"),
             ("Run gravity inversion", "invert_gravity"),
             ("Run magnetic inversion", "invert_magnetic"),
